@@ -193,7 +193,7 @@ cmd_fetch_voice() {
     case "$1" in
       --format) format="${2:-}"; shift 2 || die_usage "--format attend une valeur" ;;
       -o|--output) out="${2:-}"; shift 2 || die_usage "-o attend une valeur" ;;
-      *) [ -z "$clip" ] && clip="$1" || die_usage "argument inattendu : $1"; shift ;;
+      *) if [ -z "$clip" ]; then clip="$1"; else die_usage "argument inattendu : $1"; fi; shift ;;
     esac
   done
   [ -n "$clip" ] || die_usage "fetch-voice: identifiant de clip requis"

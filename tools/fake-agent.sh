@@ -54,7 +54,7 @@ scenario() {
   log "error"; san state error "Tests en échec" --ttl 120; san nudge "Tests en échec"; sleep "$interval"
   log "working puis done"
   san state working "Correction" --progress 90 --ttl 120; sleep "$interval"
-  san state done "Tâche terminée" --ttl 300; san nudge "Tâche terminée"
+  san state "done" "Tâche terminée" --ttl 300; san nudge "Tâche terminée"
   san say "Tâche terminée."
   sleep "$interval"
 }

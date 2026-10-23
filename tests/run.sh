@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Tests de bin/san, des hooks, de install.sh et du faux agent contre un mock server.
+# shellcheck disable=SC2015  # idiome « test && ok || ko » volontaire
 # Dépendances : bash, curl, python3 (stdlib). jq est utilisé s'il est présent
 # (les tests d'install.sh en ont besoin ; ils sont ignorés sinon).
 set -u

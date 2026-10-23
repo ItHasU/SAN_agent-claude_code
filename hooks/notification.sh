@@ -10,6 +10,7 @@ esac
 msg="$(sanitize "$(jget '.message' message)" 80)"
 [ -n "$msg" ] || msg="Claude Code attend votre réponse"
 reset_throttle
+# shellcheck disable=SC2329  # appelée via bg
 notif_flow() {
   san_call state waiting "$msg" --ttl "$TTL_WAITING"
   san_call nudge "$msg" --high
