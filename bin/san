@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+# san — client curl de l'API agent SAN (spec §10.1).
+#
+# Configuration : SAN_URL (ex. https://san.example.org, "/api/v1" est ajouté)
+# et SAN_TOKEN, ou fichier ~/.config/san/agent.env (SAN_ENV_FILE pour changer).
+#
+# Non bloquant : non configuré ou serveur injoignable => silence et code 0
+# (SAN_STRICT=1 pour obtenir un code non nul, SAN_DEBUG=1 pour les messages).
+
+set -u
+
+SAN_CONNECT_TIMEOUT="${SAN_CONNECT_TIMEOUT:-2}"
+SAN_MAX_TIME="${SAN_MAX_TIME:-5}"
+
+usage() {
+  cat <<'EOF'
+Usage : san <commande> [options]
+
+  state <status> [detail] [--progress N] [--ttl S]
+        status : idle | working | waiting | error | done
+  nudge [texte] [--high] [--ttl S]
+  say <texte> [--high] [--ttl S]
+  voice <fichier.wav|mp3|ogg>
+  inbox [--wait S] [--ack ID] [--pretty]
+  fetch-voice <clip> [--format wav|mp3|ogg] [-o fichier]
+
+Environnement : SAN_URL, SAN_TOKEN (ou ~/.config/san/agent.env),
+SAN_STRICT=1 (codes de retour réels), SAN_DEBUG=1 (messages sur stderr).
+EOF
+}
+
+debug() { [ "${SAN_DEBUG:-0}" = 1 ] && printf 'san: %s\n' "$*" >&2; return 0; }
+
+# Termine : code 0 par défaut (jamais d'échec pour un hook), 1 si SAN_STRICT=1.
+fail() {
+  debug "$*"
+  [ "${SAN_STRICT:-0}" = 1 ] && exit 1
+  exit 0
+}
+
+# Erreur d'usage : toujours visible, code 2.
+die_usage() { printf 'san: %s\n' "$*" >&2; exit 2; }
+
+load_config() {
+  local f="${SAN_ENV_FILE:-$HOME/.config/san/agent.env}" line key val
+  if [ -f "$f" ] && [ -r "$f" ]; then
+    # Lecture KEY=VALUE sans exécution de code ; l'environnement prime.
+    while IFS= read -r line || [ -n "$line" ]; do
+      line="${line#export }"
+      case "$line" in ''|'#'*) continue ;; esac
+      key="${line%%=*}"; val="${line#*=}"
+      val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
+      case "$key" in
+        SAN_URL) [ -z "${SAN_URL:-}" ] && SAN_URL="$val" ;;
+        SAN_TOKEN) [ -z "${SAN_TOKEN:-}" ] && SAN_TOKEN="$val" ;;
+      esac
+    done <"$f"
+  fi
+  SAN_URL="${SAN_URL:-}"; SAN_TOKEN="${SAN_TOKEN:-}"
+  [ -n "$SAN_URL" ] && [ -n "$SAN_TOKEN" ] || fail "non configuré (SAN_URL / SAN_TOKEN)"
+  command -v curl >/dev/null 2>&1 || fail "curl introuvable"
+  SAN_URL="${SAN_URL%/}"
+  API="$SAN_URL/api/v1"
+}
+
+# Échappe une chaîne pour JSON (sans jq).
+json_str() {
+  local s="$1"
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
+  # autres caractères de contrôle : supprimés
+  s="$(printf '%s' "$s" | tr -d '\000-\010\013\014\016-\037')"
+  printf '"%s"' "$s"
+}
+
+is_uint() { case "${1:-}" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+
+# request METHOD PATH [curl args...] ; corps de réponse sur stdout.
+# Ne renvoie 0 que pour un HTTP 2xx.
+request() {
+  local method="$1" path="$2"; shift 2
+  local tmp code max="$SAN_MAX_TIME"
+  tmp="$(mktemp 2>/dev/null)" || fail "mktemp"
+  if [ -n "${SAN_WAIT_EXTRA:-}" ]; then max=$((SAN_MAX_TIME + SAN_WAIT_EXTRA)); fi
+  code="$(curl -sS -o "$tmp" -w '%{http_code}' -X "$method" \
+    --connect-timeout "$SAN_CONNECT_TIMEOUT" --max-time "$max" \
+    --config <(printf 'header = "Authorization: Bearer %s"\n' "$SAN_TOKEN") \
+    "$@" "$API$path" 2>"$tmp.err")" || code=000
+  if [[ "$code" =~ ^2 ]]; then
+    cat "$tmp"; rm -f "$tmp" "$tmp.err"; return 0
+  fi
+  debug "$method $path -> HTTP $code $(head -c 200 "$tmp.err" 2>/dev/null) $(head -c 200 "$tmp" 2>/dev/null)"
+  rm -f "$tmp" "$tmp.err"
+  return 1
+}
+
+post_json() { # path json
+  request POST "$1" -H 'Content-Type: application/json' --data-binary "$2" || fail "échec POST $1"
+  echo
+}
+
+cmd_state() {
+  local status="" detail="" progress="" ttl="" have_detail=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --progress) progress="${2:-}"; shift 2 || die_usage "--progress attend une valeur" ;;
+      --ttl) ttl="${2:-}"; shift 2 || die_usage "--ttl attend une valeur" ;;
+      *) if [ -z "$status" ]; then status="$1"
+         elif [ "$have_detail" = 0 ]; then detail="$1"; have_detail=1
+         else die_usage "argument inattendu : $1"; fi
+         shift ;;
+    esac
+  done
+  case "$status" in idle|working|waiting|error|done) ;; *) die_usage "status invalide (idle|working|waiting|error|done)" ;; esac
+  if [ -n "$progress" ]; then
+    is_uint "$progress" && [ "$progress" -le 100 ] || die_usage "--progress doit être 0-100"
+  fi
+  if [ -n "$ttl" ]; then is_uint "$ttl" && [ "$ttl" -gt 0 ] || die_usage "--ttl doit être un entier > 0"; fi
+  load_config
+  local body="{\"status\":\"$status\""
+  [ "$have_detail" = 1 ] && [ -n "$detail" ] && body="$body,\"detail\":$(json_str "$detail")"
+  [ -n "$progress" ] && body="$body,\"progress\":$progress"
+  [ -n "$ttl" ] && body="$body,\"ttl_s\":$ttl"
+  post_json /agent/state "$body}"
+}
+
+# nudge / say : texte, --high, --ttl
+cmd_text() { # nudge|say ...
+  local kind="$1"; shift
+  local text="" have_text=0 prio="" ttl=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --high) prio=high; shift ;;
+      --normal) prio=normal; shift ;;
+      --ttl) ttl="${2:-}"; shift 2 || die_usage "--ttl attend une valeur" ;;
+      *) if [ "$have_text" = 0 ]; then text="$1"; have_text=1; else text="$text $1"; fi; shift ;;
+    esac
+  done
+  if [ "$kind" = say ] && [ -z "$text" ]; then die_usage "say: texte requis"; fi
+  if [ -n "$ttl" ]; then is_uint "$ttl" && [ "$ttl" -gt 0 ] || die_usage "--ttl doit être un entier > 0"; fi
+  load_config
+  local body="" sep=""
+  if [ -n "$text" ]; then body="\"text\":$(json_str "$text")"; sep=","; fi
+  if [ -n "$prio" ]; then body="$body$sep\"priority\":\"$prio\""; sep=","; fi
+  if [ -n "$ttl" ]; then body="$body$sep\"ttl_s\":$ttl"; fi
+  post_json "/agent/$kind" "{$body}"
+}
+
+cmd_voice() {
+  local file="${1:-}" ctype
+  [ -n "$file" ] || die_usage "voice: fichier requis"
+  [ -f "$file" ] || die_usage "voice: fichier introuvable : $file"
+  case "${file##*.}" in
+    wav|WAV) ctype=audio/wav ;;
+    mp3|MP3) ctype=audio/mpeg ;;
+    ogg|oga|opus|OGG) ctype=audio/ogg ;;
+    *) die_usage "voice: extension non gérée (wav, mp3, ogg)" ;;
+  esac
+  load_config
+  SAN_MAX_TIME="${SAN_VOICE_MAX_TIME:-30}"
+  request POST /agent/voice -H "Content-Type: $ctype" --data-binary "@$file" || fail "échec POST /agent/voice"
+  echo
+}
+
+cmd_inbox() {
+  local wait="" ack="" pretty=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --wait) wait="${2:-}"; shift 2 || die_usage "--wait attend une valeur" ;;
+      --ack) ack="${2:-}"; shift 2 || die_usage "--ack attend une valeur" ;;
+      --pretty) pretty=1; shift ;;
+      *) die_usage "inbox: option inconnue : $1" ;;
+    esac
+  done
+  if [ -n "$wait" ]; then is_uint "$wait" && [ "$wait" -le 60 ] || die_usage "--wait doit être 0-60"; fi
+  if [ -n "$ack" ]; then is_uint "$ack" || die_usage "--ack doit être un entier"; fi
+  load_config
+  local q="" sep="?"
+  [ -n "$ack" ] && { q="${q}${sep}ack=$ack"; sep="&"; }
+  [ -n "$wait" ] && { q="${q}${sep}wait=$wait"; SAN_WAIT_EXTRA="$wait"; }
+  local out
+  out="$(request GET "/agent/inbox$q")" || fail "échec GET /agent/inbox"
+  if [ "$pretty" = 1 ] && command -v jq >/dev/null 2>&1; then
+    printf '%s' "$out" | jq -r '.events[]? | "\(.id)\t\(.kind)\t\(.from.name // .from.viewer // "?")\t\(.clip.id // "-")\t\(.clip.duration_ms // 0)ms\t\(.created_at // "")"' 2>/dev/null || printf '%s\n' "$out"
+  else
+    printf '%s\n' "$out"
+  fi
+}
+
+cmd_fetch_voice() {
+  local clip="" format="" out=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --format) format="${2:-}"; shift 2 || die_usage "--format attend une valeur" ;;
+      -o|--output) out="${2:-}"; shift 2 || die_usage "-o attend une valeur" ;;
+      *) [ -z "$clip" ] && clip="$1" || die_usage "argument inattendu : $1"; shift ;;
+    esac
+  done
+  [ -n "$clip" ] || die_usage "fetch-voice: identifiant de clip requis"
+  case "$clip" in *[!A-Za-z0-9_-]*) die_usage "identifiant de clip invalide" ;; esac
+  case "$format" in ''|wav|mp3|ogg) ;; *) die_usage "--format : wav|mp3|ogg" ;; esac
+  [ -n "$out" ] || out="$clip.${format:-wav}"
+  load_config
+  SAN_MAX_TIME="${SAN_VOICE_MAX_TIME:-30}"
+  local q=""; [ -n "$format" ] && q="?format=$format"
+  local tmp="$out.part.$$"
+  if request GET "/agent/voice/$clip$q" >"$tmp"; then
+    mv -f "$tmp" "$out"; printf '%s\n' "$out"
+  else
+    rm -f "$tmp"; fail "échec GET /agent/voice/$clip"
+  fi
+}
+
+main() {
+  local cmd="${1:-}"
+  [ $# -gt 0 ] && shift
+  case "$cmd" in
+    state) cmd_state "$@" ;;
+    nudge) cmd_text nudge "$@" ;;
+    say) cmd_text say "$@" ;;
+    voice) cmd_voice "$@" ;;
+    inbox) cmd_inbox "$@" ;;
+    fetch-voice) cmd_fetch_voice "$@" ;;
+    -h|--help|help|'') usage; [ -z "$cmd" ] && exit 2; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+}
+
+main "$@"
