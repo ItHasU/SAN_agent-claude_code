@@ -1,0 +1,15 @@
+name: CI
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installer shellcheck et jq
+        run: sudo apt-get update && sudo apt-get install -y shellcheck jq
+      - name: shellcheck
+        run: shellcheck bin/san hooks/*.sh install.sh tools/*.sh tests/run.sh
+      - name: Tests
+        run: tests/run.sh
