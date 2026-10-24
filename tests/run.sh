@@ -72,6 +72,30 @@ reset_log
 configured "$SAN" nudge >/dev/null
 check "nudge sans texte" req 0 "r['body']=={}"
 
+for t in start notification question "done" error; do
+  reset_log
+  configured "$SAN" nudge "Texte $t" --type "$t" >/dev/null
+  check "nudge --type $t: champ type envoyé" req 0 "r['path']=='/api/v1/agent/nudge' and r['body']=={'text':'Texte $t','type':'$t'}"
+done
+reset_log
+configured "$SAN" nudge "Q" --type question --high --ttl 30 >/dev/null
+check "nudge --type + --high + --ttl" req 0 "r['body']=={'text':'Q','priority':'high','type':'question','ttl_s':30}"
+reset_log
+configured "$SAN" nudge "Défaut" >/dev/null
+check "nudge sans --type: champ absent" req 0 "'type' not in r['body']"
+reset_log
+out="$(bash -c "SAN_URL=$URL SAN_TOKEN=$TOKEN '$SAN' nudge x --type bogus" 2>&1)"; rc=$?
+[ "$rc" = 2 ] && [ "$(count)" = 0 ] && printf '%s' "$out" | grep -q 'start|notification|question|done|error' && ok "nudge --type invalide: code 2, message clair, aucune requête" || ko "nudge --type invalide (rc=$rc)"
+bash -c "SAN_URL=$URL SAN_TOKEN=$TOKEN '$SAN' nudge x --type" >/dev/null 2>&1; rc=$?
+[ "$rc" = 2 ] && ok "nudge --type sans valeur: code 2" || ko "nudge --type sans valeur: code $rc"
+bash -c "SAN_URL=$URL SAN_TOKEN=$TOKEN '$SAN' say x --type done" >/dev/null 2>&1; rc=$?
+[ "$rc" = 2 ] && ok "say --type: code 2" || ko "say --type: code $rc"
+reset_log
+curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"text":"x","type":"bogus"}' "$URL/api/v1/agent/nudge" >"$TMP/code"
+[ "$(cat "$TMP/code")" = 400 ] && ok "mock: type inconnu -> 400" || ko "mock: type inconnu -> $(cat "$TMP/code")"
+curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"text":"x","type":"done"}' "$URL/api/v1/agent/nudge" >"$TMP/code"
+[ "$(cat "$TMP/code")" = 200 ] && ok "mock: type valide -> 200" || ko "mock: type valide -> $(cat "$TMP/code")"
+
 reset_log
 configured "$SAN" say "J'ai besoin de ta validation" --ttl 60 >/dev/null
 check "say: POST /agent/say" req 0 "r['method']=='POST' and r['path']=='/api/v1/agent/say' and r['body']=={'text':\"J'ai besoin de ta validation\",'ttl_s':60} and $AUTH"
@@ -148,6 +172,7 @@ reset_log; rm -rf "$SAN_STATE_DIR"
 out="$(run_hook session-start "{$S,\"hook_event_name\":\"SessionStart\",\"source\":\"startup\"}")"; rc=$?
 [ "$rc" = 0 ] && [ -z "$out" ] && ok "SessionStart: code 0, aucune sortie" || ko "SessionStart rc=$rc out=$out"
 check "SessionStart -> idle + ttl" req 0 "r['path']=='/api/v1/agent/state' and r['method']=='POST' and r['body']['status']=='idle' and r['body']['ttl_s']>0 and $AUTH"
+[ "$(count)" = 1 ] && ok "SessionStart: aucun nudge" || ko "SessionStart: $(count) requêtes"
 
 reset_log
 out="$(run_hook user-prompt-submit "{$S,\"prompt\":\"Refactorise le module de paiement et corrige tous les tests qui échouent depuis hier soir sur la CI\"}")"
@@ -172,7 +197,10 @@ check "PostToolUse Grep -> « Grep »" req 2 "r['body']['detail']=='Grep'"
 reset_log
 run_hook notification "{$S,\"notification_type\":\"permission_prompt\",\"message\":\"Claude needs your permission to use Bash\"}" >/dev/null
 check "Notification -> state waiting" req 0 "r['path']=='/api/v1/agent/state' and r['body']['status']=='waiting' and r['body']['ttl_s']>0 and $AUTH"
-check "Notification -> nudge high" req 1 "r['path']=='/api/v1/agent/nudge' and r['body']['priority']=='high' and 'permission' in r['body']['text'] and $AUTH"
+check "Notification -> nudge type question" req 1 "r['body']['type']=='question' and r['body']['priority']=='high' and r['path']=='/api/v1/agent/nudge' and 'permission' in r['body']['text'] and $AUTH"
+reset_log
+run_hook notification "{$S,\"notification_type\":\"idle_prompt\",\"message\":\"Claude is waiting for your input\"}" >/dev/null
+check "Notification idle_prompt -> nudge type question" req 1 "r['path']=='/api/v1/agent/nudge' and r['body']['type']=='question'"
 reset_log
 run_hook post-tool-use "{$S,\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"a.ts\"}}" >/dev/null
 [ "$(count)" = 1 ] && ok "après waiting: le throttling est levé" || ko "throttle après waiting"
@@ -183,7 +211,7 @@ run_hook notification "{$S,\"notification_type\":\"auth_success\",\"message\":\"
 reset_log
 run_hook stop "{$S,\"hook_event_name\":\"Stop\",\"stop_hook_active\":false}" >/dev/null
 check "Stop -> state done" req 0 "r['path']=='/api/v1/agent/state' and r['body']['status']=='done' and r['body']['ttl_s']>0 and $AUTH"
-check "Stop -> nudge « Tâche terminée » (normal)" req 1 "r['path']=='/api/v1/agent/nudge' and r['body']=={'text':'Tâche terminée'} and $AUTH"
+check "Stop -> nudge « Tâche terminée » (normal)" req 1 "r['path']=='/api/v1/agent/nudge' and r['body']=={'text':'Tâche terminée','type':'done'} and $AUTH"
 
 reset_log
 run_hook session-end "{$S,\"reason\":\"other\"}" >/dev/null
@@ -240,8 +268,10 @@ rs=[json.loads(l) for l in open(sys.argv[1])]
 st={r["body"]["status"] for r in rs if r["path"].endswith("/state")}
 assert {"idle","working","waiting","error","done"} <= st, st
 assert any(r["path"].endswith("/say") for r in rs)
-assert any(r["path"].endswith("/nudge") and r["body"].get("priority")=="high" for r in rs)
+assert any(r["path"].endswith("/nudge") and r["body"].get("priority")=="high" and r["body"].get("type")=="question" for r in rs)
 assert any(r["path"].endswith("/inbox") for r in rs)
+nt=[r["body"].get("type","notification") for r in rs if r["path"].endswith("/nudge")]
+assert {"start","question","error","done","notification"} <= set(nt), nt
 assert any("progress" in r["body"] for r in rs if r["path"].endswith("/state"))' "$LOG"
 
 # --- install.sh --------------------------------------------------------------

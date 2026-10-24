@@ -40,21 +40,23 @@ check_inbox() {
 }
 
 scenario() {
-  log "idle"; san state idle "En attente de travail" --ttl 120; sleep "$interval"
+  log "idle + nudge start"; san state idle "En attente de travail" --ttl 120
+  san nudge "Session démarrée" --type start; sleep "$interval"
   log "working + progression"
   for p in 10 40 70; do
     san state working "Analyse du dépôt" --progress "$p" --ttl 120; sleep "$interval"
   done
   log "waiting + nudge high + say"
   san state waiting "Validation requise" --ttl 120
-  san nudge "Validation requise" --high
+  san nudge "Validation requise" --type question --high
   san say "J'ai besoin de ta validation."
   sleep "$interval"
   check_inbox
-  log "error"; san state error "Tests en échec" --ttl 120; san nudge "Tests en échec"; sleep "$interval"
+  log "error"; san state error "Tests en échec" --ttl 120; san nudge "Tests en échec" --type error; sleep "$interval"
+  san nudge "Mise à jour intermédiaire"   # type par défaut (notification)
   log "working puis done"
   san state working "Correction" --progress 90 --ttl 120; sleep "$interval"
-  san state "done" "Tâche terminée" --ttl 300; san nudge "Tâche terminée"
+  san state "done" "Tâche terminée" --ttl 300; san nudge "Tâche terminée" --type "done"
   san say "Tâche terminée."
   sleep "$interval"
 }

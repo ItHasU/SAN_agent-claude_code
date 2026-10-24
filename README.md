@@ -73,9 +73,13 @@ dans le contexte de Claude).
 | `SessionStart` | `idle` « Session démarrée » | ttl 1800 s |
 | `UserPromptSubmit` | `working` | detail = début du prompt, 60 caractères max, secrets masqués (jetons, `password=…`, longues chaînes opaques) ; ttl 900 s |
 | `PostToolUse` | `working` | detail « Edit foo.ts » (nom de fichier sans chemin ; pour `Bash`, seulement le premier mot de la commande) ; au plus un appel toutes les 10 s (`SAN_TOOL_THROTTLE_S`) ; ttl 900 s |
-| `Notification` (`permission_prompt`, `idle_prompt`, `elicitation_dialog`) | `waiting` + nudge `high` | texte = message de la notification (80 car. max) ; ttl 1800 s |
-| `Stop` | `done` « Tâche terminée » + nudge normal « Tâche terminée » | ttl 3600 s |
+| `Notification` (`permission_prompt`, `idle_prompt`, `elicitation_dialog`) | `waiting` + nudge `question` (`high`) | texte = message de la notification (80 car. max) ; ttl 1800 s |
+| `Stop` | `done` « Tâche terminée » + nudge `done` (priorité normale) « Tâche terminée » | ttl 3600 s |
 | `SessionEnd` | `idle` « Session terminée » | ttl 300 s |
+
+`SessionStart` n'envoie pas de nudge (donc pas de type `start`), et aucun hook n'émet `error` :
+les données des hooks Claude Code ne signalent pas d'échec de façon fiable ; `error` reste
+disponible via la skill ou `san nudge --type error`.
 
 Les TTL font passer l'état en `stale` côté serveur si la session meurt sans `SessionEnd`.
 Les appels partent en arrière-plan pour ne pas ralentir Claude Code
@@ -91,12 +95,15 @@ message vocal reçu est un fichier audio que Claude ne peut pas écouter sans ou
 
 ```sh
 san state working "Migration" --progress 40 --ttl 900   # idle|working|waiting|error|done
-san nudge "Validation requise" --high
+san nudge "Validation requise" --type question --high   # types : start|notification|question|done|error
 san say "J'ai terminé."                                  # message vocal (TTS serveur)
 san voice message.wav                                    # envoi d'un fichier audio (wav, mp3, ogg)
 san inbox --wait 30 --ack 812                            # long-poll, acquitte avant lecture
 san fetch-voice c_01J… --format mp3 -o message.mp3
 ```
+
+Le type de nudge (`--type`) est facultatif ; sans lui le champ n'est pas envoyé et le
+serveur applique `notification`. Une valeur inconnue est refusée côté client (code 2).
 
 `inbox` affiche le JSON du serveur (`--pretty` : une ligne par événement, avec `jq`).
 
@@ -107,7 +114,7 @@ SAN_URL=https://san.example.org SAN_TOKEN=agt_xxx tools/fake-agent.sh --interval
 tools/fake-agent.sh --once --interval 1
 ```
 
-Il rejoue en boucle : `idle`, `working` avec progression, `waiting` + nudge `high` + `say`,
+Il rejoue en boucle (en variant les types de nudge : `start`, `question`, `error`, `done`, défaut) : `idle`, `working` avec progression, `waiting` + nudge `question` `high` + `say`,
 lecture de l'inbox (avec acquittement), `error`, puis `done`. `Ctrl-C` repasse l'agent en `idle`.
 
 ## Tests
