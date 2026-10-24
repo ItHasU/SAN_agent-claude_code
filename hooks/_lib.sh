@@ -17,7 +17,21 @@ TTL_IDLE="${SAN_TTL_IDLE:-1800}"
 TTL_DONE="${SAN_TTL_DONE:-3600}"
 TTL_ENDED="${SAN_TTL_ENDED:-300}"
 TOOL_THROTTLE_S="${SAN_TOOL_THROTTLE_S:-10}"
+TTL_ERROR="${SAN_TTL_ERROR:-1800}"
 DETAIL_MAX="${SAN_DETAIL_MAX:-60}"
+# Fenêtre (s) pendant laquelle un état « working » récent supprime un nouveau nudge start.
+NUDGE_START_WINDOW_S="${SAN_NUDGE_START_WINDOW_S:-300}"
+
+# Variables SAN_* facultatives : l'environnement prime, sinon fichier d'env de bin/san
+# (lu sans être exécuté). SAN_NUDGE_START : 0 (défaut) = pas de nudge start, 1 = activé.
+if [ -z "${SAN_NUDGE_START:-}" ]; then
+  _envf="${SAN_ENV_FILE:-$HOME/.config/san/agent.env}"
+  if [ -f "$_envf" ] && [ -r "$_envf" ]; then
+    SAN_NUDGE_START="$(sed -n 's/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}SAN_NUDGE_START=//p' "$_envf" 2>/dev/null \
+      | tail -n1 | tr -d "\"' \r")"
+  fi
+fi
+SAN_NUDGE_START="${SAN_NUDGE_START:-0}"
 
 HOOK_INPUT=""
 if [ ! -t 0 ]; then HOOK_INPUT="$(cat 2>/dev/null || true)"; fi
@@ -77,3 +91,11 @@ bg() {
 now() { date +%s; }
 reset_throttle() { echo 0 >"$THROTTLE_FILE" 2>/dev/null || true; }
 mark_throttle() { now >"$THROTTLE_FILE" 2>/dev/null || true; }
+
+# last_mark : horodatage du dernier état working publié (0 si absent/réinitialisé).
+last_mark() {
+  local v=0
+  [ -f "$THROTTLE_FILE" ] && v="$(cat "$THROTTLE_FILE" 2>/dev/null || echo 0)"
+  case "$v" in ''|*[!0-9]*) v=0 ;; esac
+  printf '%s' "$v"
+}

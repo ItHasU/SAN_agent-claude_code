@@ -8,7 +8,7 @@ allowed-tools: Bash(@SAN_BIN@ *)
 
 SAN affiche l'état des agents sur une carte M5Stick et une application web. Cette session
 Claude Code est un agent SAN : les hooks publient déjà automatiquement l'état
-(`idle`, `working`, `waiting`, `done`). Ce skill sert aux actions **explicites**.
+(`idle`, `working`, `waiting`, `done`, `error` sur erreur d'API). Ce skill sert aux actions **explicites**.
 
 Commande : `@SAN_BIN@` (notée `san` ci-dessous). Elle est silencieuse et ne fait jamais
 échouer la session si SAN n'est pas configuré ou injoignable : n'en tiens pas compte.
@@ -49,8 +49,10 @@ sans `--type`, le serveur applique `notification`.
 | `done` | tâche terminée |
 | `error` | échec nécessitant l'attention de l'utilisateur |
 
-Les hooks envoient déjà `question` (demande de permission / attente) et `done` (fin de
-réponse) ; n'envoie `error` ou `start` toi-même que pour un événement utile.
+Les hooks envoient déjà `question` (demande de permission / attente), `done` (fin de
+réponse), `error` (tour arrêté par une erreur d'API, hook `StopFailure`) et, si
+`SAN_NUDGE_START=1`, `start` (début de tour) ; n'envoie ces types toi-même que pour un
+événement utile non couvert (ex. échec d'un traitement : `error`).
 
 ## Lire les messages vocaux
 

@@ -71,20 +71,30 @@ dans le contexte de Claude).
 | Événement Claude Code | État SAN | Détails |
 |---|---|---|
 | `SessionStart` | `idle` « Session démarrée » | ttl 1800 s |
-| `UserPromptSubmit` | `working` | detail = début du prompt, 60 caractères max, secrets masqués (jetons, `password=…`, longues chaînes opaques) ; ttl 900 s |
+| `UserPromptSubmit` | `working` (+ nudge `start` « Début du travail » si `SAN_NUDGE_START=1`) | detail = début du prompt, 60 caractères max, secrets masqués (jetons, `password=…`, longues chaînes opaques) ; ttl 900 s. Nudge `start` : désactivé par défaut, un seul par tour de travail (voir ci-dessous) |
 | `PostToolUse` | `working` | detail « Edit foo.ts » (nom de fichier sans chemin ; pour `Bash`, seulement le premier mot de la commande) ; au plus un appel toutes les 10 s (`SAN_TOOL_THROTTLE_S`) ; ttl 900 s |
 | `Notification` (`permission_prompt`, `idle_prompt`, `elicitation_dialog`) | `waiting` + nudge `question` (`high`) | texte = message de la notification (80 car. max) ; ttl 1800 s |
 | `Stop` | `done` « Tâche terminée » + nudge `done` (priorité normale) « Tâche terminée » | ttl 3600 s |
+| `StopFailure` (tour terminé sur erreur d'API) | `error` « Erreur : <type> » + nudge `error` (`high`) | `<type>` = champ `error` du hook (`rate_limit`, `overloaded`, `authentication_failed`…), sinon « Erreur » ; ttl 1800 s (`SAN_TTL_ERROR`) |
 | `SessionEnd` | `idle` « Session terminée » | ttl 300 s |
 
-`SessionStart` n'envoie pas de nudge (donc pas de type `start`), et aucun hook n'émet `error` :
-les données des hooks Claude Code ne signalent pas d'échec de façon fiable ; `error` reste
-disponible via la skill ou `san nudge --type error`.
+`SessionStart` n'envoie pas de nudge.
+
+**Nudge `start`** : `SAN_NUDGE_START=1` (environnement ou `~/.config/san/agent.env` ; défaut `0`,
+désactivé) envoie `san nudge --type start` au début d'un tour. Pour limiter le bruit, il n'est
+envoyé que si le dernier état `working` local date de plus de 300 s (`SAN_NUDGE_START_WINDOW_S`)
+ou a été réinitialisé par `Stop`, `StopFailure`, `Notification` ou `SessionStart` : un seul
+nudge par tour de travail, pas un par prompt enchaîné.
+
+**`PostToolUseFailure` volontairement non branché** : un outil qui échoue est un événement
+courant et bénin (commande en erreur, fichier absent) que Claude traite lui-même ; l'événement
+serait trop bavard. Seul `StopFailure` (le tour s'arrête réellement sur une erreur d'API) publie `error`.
+`error` reste aussi disponible via la skill ou `san nudge --type error`.
 
 Les TTL font passer l'état en `stale` côté serveur si la session meurt sans `SessionEnd`.
 Les appels partent en arrière-plan pour ne pas ralentir Claude Code
 (`SAN_HOOK_SYNC=1` pour les rendre synchrones). Les TTL se règlent par `SAN_TTL_WORKING`,
-`SAN_TTL_WAITING`, `SAN_TTL_IDLE`, `SAN_TTL_DONE`, `SAN_TTL_ENDED`.
+`SAN_TTL_WAITING`, `SAN_TTL_IDLE`, `SAN_TTL_DONE`, `SAN_TTL_ERROR`, `SAN_TTL_ENDED`.
 
 La skill `san` (chargée automatiquement par Claude quand c'est pertinent) lui apprend à
 prévenir l'utilisateur par `say` quand une validation est requise et à consulter l'inbox ;

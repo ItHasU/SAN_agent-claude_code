@@ -236,8 +236,47 @@ printf '%s' "{$S,\"prompt\":\"Dis \\\"salut\\\" à Bob\"}" \
   | PATH="$NOJQ" SAN_URL="$URL" SAN_TOKEN="$TOKEN" "$ROOT/hooks/user-prompt-submit.sh"
 check "sans jq: UserPromptSubmit (guillemets échappés)" req 1 "r['body']['detail']=='Dis \"salut\" à Bob'"
 
+echo "== hooks : nudge start (SAN_NUDGE_START) et StopFailure"
+reset_log; rm -rf "$SAN_STATE_DIR"
+run_hook user-prompt-submit "{$S,\"prompt\":\"Premier prompt\"}" >/dev/null
+[ "$(count)" = 1 ] && check "nudge start désactivé par défaut: working seul" req 0 "r['body']['status']=='working'" || ko "nudge start par défaut: $(count) requêtes"
+reset_log; rm -rf "$SAN_STATE_DIR"
+printf '%s' "{$S,\"prompt\":\"Premier prompt\"}" | SAN_NUDGE_START=1 SAN_URL="$URL" SAN_TOKEN="$TOKEN" "$ROOT/hooks/user-prompt-submit.sh"
+check "nudge start activé: working puis nudge start" req 1 "r['path']=='/api/v1/agent/nudge' and r['body']['type']=='start' and $AUTH"
+[ "$(count)" = 2 ] && ok "nudge start activé: 2 requêtes" || ko "nudge start activé: $(count) requêtes"
+printf '%s' "{$S,\"prompt\":\"Deuxième prompt enchaîné\"}" | SAN_NUDGE_START=1 SAN_URL="$URL" SAN_TOKEN="$TOKEN" "$ROOT/hooks/user-prompt-submit.sh"
+[ "$(count)" = 3 ] && ok "nudge start: pas de doublon sur prompts enchaînés" || ko "doublon nudge start: $(count) requêtes"
+run_hook stop "{$S}" >/dev/null
+printf '%s' "{$S,\"prompt\":\"Nouveau tour\"}" | SAN_NUDGE_START=1 SAN_URL="$URL" SAN_TOKEN="$TOKEN" "$ROOT/hooks/user-prompt-submit.sh"
+check "nudge start: de nouveau après Stop" req 6 "r['path']=='/api/v1/agent/nudge' and r['body']['type']=='start'"
+echo $(($(date +%s) - 1000)) >"$SAN_STATE_DIR/sess-1.last"
+reset_log
+printf '%s' "{$S,\"prompt\":\"Après longue pause\"}" | SAN_NUDGE_START=1 SAN_URL="$URL" SAN_TOKEN="$TOKEN" "$ROOT/hooks/user-prompt-submit.sh"
+[ "$(count)" = 2 ] && ok "nudge start: de nouveau si working > 300 s" || ko "nudge start après fenêtre: $(count)"
+rm -rf "$SAN_STATE_DIR"; reset_log
+printf 'SAN_NUDGE_START=1\n' >"$TMP/nudge.env"
+printf '%s' "{$S,\"prompt\":\"via fichier\"}" | SAN_ENV_FILE="$TMP/nudge.env" SAN_URL="$URL" SAN_TOKEN="$TOKEN" "$ROOT/hooks/user-prompt-submit.sh"
+[ "$(count)" = 2 ] && ok "SAN_NUDGE_START lu depuis le fichier d'env" || ko "SAN_NUDGE_START fichier: $(count)"
+
+reset_log
+out="$(run_hook stop-failure "{$S,\"hook_event_name\":\"StopFailure\",\"error\":\"rate_limit\",\"error_details\":\"429\",\"last_assistant_message\":\"API Error: Rate limit reached\"}")"
+[ -z "$out" ] && ok "StopFailure: aucune sortie" || ko "StopFailure sortie: $out"
+check "StopFailure -> state error + detail" req 0 "r['path']=='/api/v1/agent/state' and r['body']['status']=='error' and r['body']['detail']=='Erreur : rate_limit' and r['body']['ttl_s']>0 and $AUTH"
+check "StopFailure -> nudge error high" req 1 "r['path']=='/api/v1/agent/nudge' and r['body']=={'text':'Erreur : rate_limit','type':'error','priority':'high'} and $AUTH"
+reset_log
+run_hook stop-failure "{$S,\"hook_event_name\":\"StopFailure\"}" >/dev/null
+check "StopFailure sans champs -> « Erreur »" req 1 "r['body']['text']=='Erreur' and r['body']['type']=='error'"
+reset_log
+printf '%s' "{$S,\"error\":\"server_error\"}" | PATH="$NOJQ" SAN_URL="$URL" SAN_TOKEN="$TOKEN" "$ROOT/hooks/stop-failure.sh"
+check "sans jq: StopFailure « Erreur : server_error »" req 1 "r['body']['text']=='Erreur : server_error'"
+reset_log
+printf '%s' "{$S,\"prompt\":\"x\"}" | PATH="$NOJQ" SAN_NUDGE_START=1 SAN_URL="$URL" SAN_TOKEN="$TOKEN" "$ROOT/hooks/user-prompt-submit.sh"
+rm -rf "$SAN_STATE_DIR"
+printf '%s' "{$S,\"prompt\":\"x\"}" | PATH="$NOJQ" SAN_NUDGE_START=1 SAN_URL="$URL" SAN_TOKEN="$TOKEN" "$ROOT/hooks/user-prompt-submit.sh"
+check "sans jq: nudge start" req 3 "r['body'].get('type')=='start'"
+
 echo "== hooks : non configuré / serveur injoignable / entrée vide"
-for h in session-start user-prompt-submit post-tool-use notification stop session-end; do
+for h in session-start user-prompt-submit post-tool-use notification stop stop-failure session-end; do
   for mode in unconfigured down; do
     rm -rf "$SAN_STATE_DIR"; reset_log
     t0=$(date +%s)
@@ -250,7 +289,7 @@ for h in session-start user-prompt-submit post-tool-use notification stop sessio
     [ "$rc" = 0 ] && [ -z "$out" ] && [ $((t1 - t0)) -le 4 ] && ok "$h ($mode): code 0, silencieux, rapide" || ko "$h ($mode): rc=$rc out=$out $((t1 - t0))s"
   done
 done
-for h in session-start user-prompt-submit post-tool-use notification stop session-end; do
+for h in session-start user-prompt-submit post-tool-use notification stop stop-failure session-end; do
   out="$("$ROOT/hooks/$h.sh" </dev/null 2>&1)"; rc=$?
   [ "$rc" = 0 ] && [ -z "$out" ] && ok "$h: stdin vide -> code 0" || ko "$h: stdin vide rc=$rc"
   printf 'pas du json {{{' | "$ROOT/hooks/$h.sh" >/dev/null 2>&1; rc=$?
@@ -284,9 +323,17 @@ JSON
   "$ROOT/install.sh" --project "$P" >/dev/null 2>&1; rc=$?
   [ "$rc" = 0 ] && ok "install: code 0" || ko "install rc=$rc"
   check "install: conserve la config existante" jq -e '.permissions.allow[0]=="Bash(ls)" and (.hooks.Stop|map(.hooks[0].command)|index("echo autre")!=null)' "$P/.claude/settings.json"
-  check "install: 6 événements SAN" jq -e '[.hooks|keys[]] | (index("SessionStart")!=null and index("UserPromptSubmit")!=null and index("PostToolUse")!=null and index("Notification")!=null and index("Stop")!=null and index("SessionEnd")!=null)' "$P/.claude/settings.json"
+  check "install: 7 événements SAN" jq -e '[.hooks|keys[]] | (index("StopFailure")!=null and index("SessionStart")!=null and index("UserPromptSubmit")!=null and index("PostToolUse")!=null and index("Notification")!=null and index("Stop")!=null and index("SessionEnd")!=null)' "$P/.claude/settings.json"
   "$ROOT/install.sh" --project "$P" >/dev/null 2>&1
   check "install idempotent (pas de doublon)" jq -e '(.hooks.Stop|length)==2' "$P/.claude/settings.json"
+  check "install: StopFailure -> stop-failure.sh (1 seul)" jq -e '(.hooks.StopFailure|length)==1 and (.hooks.StopFailure[0].hooks[0].command|contains("/san/hooks/stop-failure.sh"))' "$P/.claude/settings.json"
+  check "install: stop-failure.sh exécutable" test -x "$P/.claude/san/hooks/stop-failure.sh"
+  # ré-exécution sur une installation antérieure (sans StopFailure)
+  P4="$TMP/proj4"; mkdir -p "$P4"
+  "$ROOT/install.sh" --project "$P4" >/dev/null 2>&1
+  jq 'del(.hooks.StopFailure)' "$P4/.claude/settings.json" >"$TMP/old.json" && mv "$TMP/old.json" "$P4/.claude/settings.json"
+  "$ROOT/install.sh" --project "$P4" >/dev/null 2>&1
+  check "install: ré-exécution ajoute StopFailure sans doublon" jq -e '(.hooks.StopFailure|length)==1 and (.hooks.Stop|length)==1' "$P4/.claude/settings.json"
   check "install: fichiers" test -x "$P/.claude/san/bin/san" -a -x "$P/.claude/san/hooks/stop.sh" -a -f "$P/.claude/skills/san/SKILL.md" -a -f "$P/.claude/commands/san-inbox.md" -a -f "$P/.claude/settings.json.bak"
   check "install: @SAN_BIN@ substitué" bash -c "! grep -q @SAN_BIN@ '$P/.claude/skills/san/SKILL.md' && grep -q '$P/.claude/san/bin/san' '$P/.claude/skills/san/SKILL.md'"
   # le hook installé fonctionne
