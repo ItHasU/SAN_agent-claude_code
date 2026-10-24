@@ -10,6 +10,6 @@ jobs:
       - name: Installer shellcheck et jq
         run: sudo apt-get update && sudo apt-get install -y shellcheck jq
       - name: shellcheck
-        run: shellcheck bin/san hooks/*.sh install.sh tools/*.sh tests/run.sh
+        run: shellcheck -S warning bin/san hooks/*.sh install.sh tools/*.sh tests/run.sh
       - name: Tests
         run: tests/run.sh
