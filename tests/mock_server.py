@@ -8,6 +8,8 @@ Chaque requête est enregistrée (une ligne JSON) : method, path, query, headers
 import argparse, json, sys, urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+NUDGE_TYPES = ("start", "notification", "question", "done", "error")
+
 INBOX = {"events": [{"id": 812, "kind": "voice",
                      "from": {"viewer": "m5-bureau", "name": "Carte bureau"},
                      "created_at": "2026-10-23T15:04:12Z",
@@ -48,7 +50,12 @@ class H(BaseHTTPRequestHandler):
         if self.headers.get("Authorization") != "Bearer " + self.server.token:
             return self._send(401, b'{"error":"unauthorized"}')
         p = u.path
-        if self.command == "POST" and p in ("/api/v1/agent/state", "/api/v1/agent/nudge"):
+        if self.command == "POST" and p == "/api/v1/agent/nudge":
+            b = rec["body"] if isinstance(rec["body"], dict) else {}
+            if "type" in b and b["type"] not in NUDGE_TYPES:
+                return self._send(400, b'{"error":"invalid type"}')
+            return self._send(200, b'{"ok":true}')
+        if self.command == "POST" and p == "/api/v1/agent/state":
             return self._send(200, b'{"ok":true}')
         if self.command == "POST" and p == "/api/v1/agent/say":
             return self._send(202, b'{"clip":{"id":"c_SAY"}}')

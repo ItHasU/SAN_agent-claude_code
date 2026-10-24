@@ -18,7 +18,8 @@ Usage : san <commande> [options]
 
   state <status> [detail] [--progress N] [--ttl S]
         status : idle | working | waiting | error | done
-  nudge [texte] [--high] [--ttl S]
+  nudge [texte] [--type start|notification|question|done|error] [--high] [--ttl S]
+        --type : nature du nudge (défaut côté serveur : notification)
   say <texte> [--high] [--ttl S]
   voice <fichier.wav|mp3|ogg>
   inbox [--wait S] [--ack ID] [--pretty]
@@ -127,21 +128,29 @@ cmd_state() {
 # nudge / say : texte, --high, --ttl
 cmd_text() { # nudge|say ...
   local kind="$1"; shift
-  local text="" have_text=0 prio="" ttl=""
+  local text="" have_text=0 prio="" ttl="" ntype="" have_type=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --high) prio=high; shift ;;
       --normal) prio=normal; shift ;;
       --ttl) ttl="${2:-}"; shift 2 || die_usage "--ttl attend une valeur" ;;
+      --type) [ "$kind" = nudge ] || die_usage "--type n'est valable que pour nudge"
+              have_type=1; ntype="${2:-}"; shift 2 || die_usage "--type attend une valeur" ;;
       *) if [ "$have_text" = 0 ]; then text="$1"; have_text=1; else text="$text $1"; fi; shift ;;
     esac
   done
   if [ "$kind" = say ] && [ -z "$text" ]; then die_usage "say: texte requis"; fi
   if [ -n "$ttl" ]; then is_uint "$ttl" && [ "$ttl" -gt 0 ] || die_usage "--ttl doit être un entier > 0"; fi
+  if [ "$have_type" = 1 ]; then
+    case "$ntype" in start|notification|question|done|error) ;;
+      *) die_usage "--type invalide : '$ntype' (start|notification|question|done|error)" ;;
+    esac
+  fi
   load_config
   local body="" sep=""
   if [ -n "$text" ]; then body="\"text\":$(json_str "$text")"; sep=","; fi
   if [ -n "$prio" ]; then body="$body$sep\"priority\":\"$prio\""; sep=","; fi
+  if [ -n "$ntype" ]; then body="$body$sep\"type\":\"$ntype\""; sep=","; fi
   if [ -n "$ttl" ]; then body="$body$sep\"ttl_s\":$ttl"; fi
   post_json "/agent/$kind" "{$body}"
 }

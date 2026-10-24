@@ -6,7 +6,7 @@ reset_throttle
 # shellcheck disable=SC2329  # appelée via bg
 stop_flow() {
   san_call state "done" "Tâche terminée" --ttl "$TTL_DONE"
-  san_call nudge "Tâche terminée"
+  san_call nudge "Tâche terminée" --type "done"
 }
 bg stop_flow
 exit 0

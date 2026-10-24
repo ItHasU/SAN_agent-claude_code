@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Hook Notification : permission / attente d'input -> waiting + nudge high.
+# Hook Notification : permission / attente d'input -> waiting + nudge question (high).
 # shellcheck source=hooks/_lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/_lib.sh" 2>/dev/null || exit 0
 ntype="$(jget '.notification_type' notification_type)"
@@ -13,7 +13,7 @@ reset_throttle
 # shellcheck disable=SC2329  # appelée via bg
 notif_flow() {
   san_call state waiting "$msg" --ttl "$TTL_WAITING"
-  san_call nudge "$msg" --high
+  san_call nudge "$msg" --type question --high
 }
 bg notif_flow
 exit 0
