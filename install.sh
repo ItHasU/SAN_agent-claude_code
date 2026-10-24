@@ -45,7 +45,8 @@ put() { # src dst [mode]
   if [ -e "$dst" ] && ! cmp -s "$src" "$dst" && [ "$force" = 0 ]; then
     die "$dst existe et diffère (utiliser --force pour l'écraser)"
   fi
-  run install -D -m "${3:-644}" "$src" "$dst"
+  run mkdir -p "$(dirname "$dst")"
+  run install -m "${3:-644}" "$src" "$dst"   # pas de -D : option GNU absente de macOS
 }
 
 # Version avec substitution de @SAN_BIN@ (skill et commande).
