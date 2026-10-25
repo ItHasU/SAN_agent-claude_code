@@ -84,13 +84,18 @@ dans le contexte de Claude).
 **Sous-agents** : les événements `SubagentStart` / `SubagentStop` (champs `agent_id`, `agent_type`)
 alimentent un registre par session dans `SAN_STATE_DIR` (`<session>.subagents`, une ligne
 `agent_id epoch` ; écriture atomique par fichier temporaire + `mv` sous verrou `mkdir`).
-`Stop` y lit le nombre de sous-agents actifs : s'il est > 0, l'agent principal n'est pas
+`Stop` lit d'abord le tableau `background_tasks` de son entrée (documenté : une entrée par tâche
+en cours ; le nombre de sous-agents actifs = entrées `type == "subagent"` dont le `status` n'est
+pas terminal : completed, failed, killed, cancelled, stopped…, la doc ne listant pas les valeurs).
+Quand cette clé est présente (même vide), elle fait autorité, y compris si `SubagentStop` ne se
+déclenche pas pour un sous-agent d'arrière-plan, et un résultat 0 vide le registre. Le registre
+n'est qu'un repli (clé absente sur d'anciennes versions, ou `jq` absent). Il donne le nombre de sous-agents actifs : s'il est > 0, l'agent principal n'est pas
 « terminé » et SAN reçoit `working` au lieu de `done` + nudge. Le `Stop` du tour final, une
 fois les sous-agents finis, publie `done` normalement. Garde-fous :
 
 - un `SubagentStop` pour un `agent_id` inconnu est ignoré (Claude Code lance aussi des agents
   internes, p. ex. suggestions de prompt ou `/btw`, qui déclenchent `SubagentStop`) : le compteur ne descend jamais sous 0 ;
-- une entrée de plus de 2 h (`SAN_SUBAGENT_MAX_AGE_S`, 7200 par défaut) est ignorée (compteur « fantôme » si un `SubagentStop` s'est perdu) ;
+- (repli seulement) une entrée de plus de 2 h (`SAN_SUBAGENT_MAX_AGE_S`, 7200 par défaut) est ignorée (compteur « fantôme » si un `SubagentStop` s'est perdu) ;
 - `SessionStart`, `SessionEnd` et `StopFailure` vident le registre.
 
 Cas limite : si l'agent principal s'est déjà arrêté (`Stop` publié en `working` à cause d'un

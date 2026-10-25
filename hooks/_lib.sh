@@ -166,3 +166,21 @@ sa_count() {
   fi
   printf '%s' "$n"
 }
+
+# sa_bg_count : sous-agents en cours d'après `background_tasks` de l'entrée de Stop
+# (autorité quand la clé est présente, même vide). N'affiche RIEN si la clé est absente ou
+# si jq manque / l'entrée est illisible : l'appelant se rabat alors sur le registre.
+# La doc ne liste pas les valeurs de `status` (exemple : "running", entrées « en cours ») :
+# on exclut les statuts terminaux connus plutôt que de n'accepter que « running ».
+sa_bg_count() {
+  command -v jq >/dev/null 2>&1 || return 0
+  printf '%s' "$HOOK_INPUT" | jq -r '
+    if (.background_tasks | type) == "array" then
+      [.background_tasks[]
+        | select(type == "object" and .type == "subagent"
+            and (((.status // "running") | tostring | ascii_downcase) as $s
+                 | ["completed","complete","done","finished","failed","error","errored","killed","cancelled","canceled","stopped","terminated","aborted"]
+                 | index($s) | not))
+      ] | length
+    else empty end' 2>/dev/null || true
+}

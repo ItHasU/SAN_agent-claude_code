@@ -49,7 +49,7 @@ sans `--type`, le serveur applique `notification`.
 | `done` | tâche terminée |
 | `error` | échec nécessitant l'attention de l'utilisateur |
 
-Tant que des sous-agents sont en cours, le hook `Stop` n'annonce pas la fin (état `working`, pas de nudge `done`) : ne l'annonce pas toi-même par `say`/`nudge done` avant d'avoir reçu leurs résultats.
+Tant que des sous-agents sont en cours, le hook `Stop` (qui lit `background_tasks`) n'annonce pas la fin (état `working`, pas de nudge `done`) : ne l'annonce pas toi-même par `say`/`nudge done` avant d'avoir reçu leurs résultats.
 
 Les hooks envoient déjà `question` (demande de permission / attente), `done` (fin de
 réponse), `error` (tour arrêté par une erreur d'API, hook `StopFailure`) et, si

@@ -350,6 +350,35 @@ printf '%s' "{$SA}" | PATH="$NOJQ" SAN_URL="$URL" SAN_TOKEN="$TOKEN" "$ROOT/hook
 check "sans jq: SubagentStop + Stop -> done" req 1 "r['body']['status']=='done'"
 rm -rf "$SAN_STATE_DIR"; reset_log
 
+echo "== hooks : Stop et background_tasks (autorité sur le registre)"
+bgstop() { run_hook stop "{$SA,\"hook_event_name\":\"Stop\",\"background_tasks\":$1}"; }
+rm -rf "$SAN_STATE_DIR"; reset_log
+sub_start g1 >/dev/null
+bgstop '[]' >/dev/null
+check "background_tasks vide + registre non vide -> done" req 0 "r['body']['status']=='done'"
+check "background_tasks vide -> registre purgé" test ! -s "$SAN_STATE_DIR/sa-1.subagents"
+reset_log
+bgstop '[{"id":"t1","type":"subagent","status":"running","description":"x","agent_type":"Explore"}]' >/dev/null
+[ "$(count)" = 1 ] && check "un subagent running + registre vide -> working, sans done" req 0 "r['body']['status']=='working' and r['body']['detail']=='1 sous-agent en cours'" || ko "subagent running: $(count) requêtes"
+reset_log
+bgstop '[{"id":"t1","type":"subagent","status":"completed"},{"id":"t2","type":"subagent","status":"failed"},{"id":"t3","type":"subagent","status":"killed"}]' >/dev/null
+check "subagents terminés/échoués/tués -> done" req 0 "r['body']['status']=='done'"
+reset_log
+bgstop '[{"id":"t1","type":"shell","status":"running","command":"tail -f x"},{"id":"t2","type":"monitor","status":"running"}]' >/dev/null
+check "types non-subagent ignorés -> done" req 0 "r['body']['status']=='done'"
+reset_log
+bgstop '[{"type":"shell","status":"running"},{"type":"subagent","status":"running"},{"type":"subagent","status":"completed"},{"type":"subagent","status":"running"}]' >/dev/null
+check "mélange -> compte seulement les subagents actifs (2)" req 0 "r['body']['detail']=='2 sous-agents en cours'"
+reset_log
+sub_start g2 >/dev/null
+sa_stop_main >/dev/null
+check "clé background_tasks absente -> registre (working)" req 0 "r['body']['status']=='working'"
+reset_log
+printf '{"agent_id":"ns1"}' | "$ROOT/hooks/subagent-start.sh"
+printf '{"background_tasks":[]}' | PATH="$NOJQ" SAN_URL="$URL" SAN_TOKEN="$TOKEN" "$ROOT/hooks/stop.sh"
+check "sans jq: repli sur le registre (working malgré background_tasks vide)" req 0 "r['body']['status']=='working'"
+rm -rf "$SAN_STATE_DIR"; reset_log
+
 echo "== hooks : non configuré / serveur injoignable / entrée vide"
 for h in session-start user-prompt-submit post-tool-use notification stop stop-failure session-end subagent-start subagent-stop; do
   for mode in unconfigured down; do
