@@ -10,6 +10,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 NUDGE_TYPES = ("start", "notification", "question", "done", "error")
 
+GOOD_ENR = "enr_goodtoken"
+NEW_TOKEN = "agt_SECRETNEW"
+PENDING_TOKEN = "agt_PENDINGTOK"
+
 INBOX = {"events": [{"id": 812, "kind": "voice",
                      "from": {"viewer": "m5-bureau", "name": "Carte bureau"},
                      "created_at": "2026-10-23T15:04:12Z",
@@ -24,12 +28,28 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def _send(self, code, body=b"", ctype="application/json"):
+    def _send(self, code, body=b"", ctype="application/json", extra=None):
         self.send_response(code)
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _register(self, b):
+        slug, etok = b.get("slug", ""), b.get("enrollment_token")
+        if slug == "taken":
+            return self._send(409, b'{"error":"slug_taken"}')
+        if slug == "limited":
+            return self._send(429, b'{"error":"rate_limited","retry_after_s":7}', extra={"Retry-After": "7"})
+        if slug == "bad slug":
+            return self._send(400, b'{"error":"invalid_slug"}')
+        if etok is not None:
+            if etok != GOOD_ENR:
+                return self._send(401, b'{"error":"invalid_enrollment_token"}')
+            return self._send(201, json.dumps({"slug": slug, "status": "active", "token": NEW_TOKEN, "group": "equipe"}).encode())
+        return self._send(201, json.dumps({"slug": slug, "status": "pending", "token": PENDING_TOKEN}).encode())
 
     def _handle(self):
         n = int(self.headers.get("Content-Length") or 0)
@@ -47,9 +67,20 @@ class H(BaseHTTPRequestHandler):
             rec["body_hex"] = raw[:64].hex()
         with open(self.server.logfile, "a") as f:
             f.write(json.dumps(rec) + "\n")
-        if self.headers.get("Authorization") != "Bearer " + self.server.token:
-            return self._send(401, b'{"error":"unauthorized"}')
         p = u.path
+        if self.command == "POST" and p == "/api/v1/agent/register":
+            return self._register(rec["body"] if isinstance(rec["body"], dict) else {})
+        auth = self.headers.get("Authorization")
+        if p == "/api/v1/agent/status" and self.command == "GET":
+            if auth == "Bearer " + PENDING_TOKEN:
+                return self._send(200, b'{"slug":"p","status":"pending"}')
+            if auth in ("Bearer " + NEW_TOKEN, "Bearer " + self.server.token):
+                return self._send(200, b'{"slug":"p","status":"active"}')
+            return self._send(401, b'{"error":"unauthorized"}')
+        if auth == "Bearer " + PENDING_TOKEN:
+            return self._send(403, b'{"error":"agent_pending"}')
+        if auth != "Bearer " + self.server.token:
+            return self._send(401, b'{"error":"unauthorized"}')
         if self.command == "POST" and p == "/api/v1/agent/nudge":
             b = rec["body"] if isinstance(rec["body"], dict) else {}
             if "type" in b and b["type"] not in NUDGE_TYPES:

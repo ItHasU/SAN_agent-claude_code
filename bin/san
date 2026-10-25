@@ -24,6 +24,11 @@ Usage : san <commande> [options]
   voice <fichier.wav|mp3|ogg>
   inbox [--wait S] [--ack ID] [--pretty]
   fetch-voice <clip> [--format wav|mp3|ogg] [-o fichier]
+  register <slug> [--name NOM] [--enrollment-token enr_…|-] [--force]
+        enrôle l'agent et écrit SAN_TOKEN dans le fichier d'env (jeton enr_ aussi
+        via SAN_ENROLLMENT_TOKEN ou stdin avec « - », préférable à l'argument)
+  register --status
+        statut d'enrôlement : pending | active
 
 Environnement : SAN_URL, SAN_TOKEN (ou ~/.config/san/agent.env),
 SAN_STRICT=1 (codes de retour réels), SAN_DEBUG=1 (messages sur stderr).
@@ -42,10 +47,10 @@ fail() {
 # Erreur d'usage : toujours visible, code 2.
 die_usage() { printf 'san: %s\n' "$*" >&2; exit 2; }
 
-load_config() {
+# Lit SAN_URL / SAN_TOKEN du fichier d'env (sans l'exécuter) ; l'environnement prime.
+read_env_file() {
   local f="${SAN_ENV_FILE:-$HOME/.config/san/agent.env}" line key val
   if [ -f "$f" ] && [ -r "$f" ]; then
-    # Lecture KEY=VALUE sans exécution de code ; l'environnement prime.
     while IFS= read -r line || [ -n "$line" ]; do
       line="${line#export }"
       case "$line" in ''|'#'*) continue ;; esac
@@ -58,6 +63,10 @@ load_config() {
     done <"$f"
   fi
   SAN_URL="${SAN_URL:-}"; SAN_TOKEN="${SAN_TOKEN:-}"
+}
+
+load_config() {
+  read_env_file
   [ -n "$SAN_URL" ] && [ -n "$SAN_TOKEN" ] || fail "non configuré (SAN_URL / SAN_TOKEN)"
   command -v curl >/dev/null 2>&1 || fail "curl introuvable"
   SAN_URL="${SAN_URL%/}"
@@ -89,6 +98,9 @@ request() {
     "$@" "$API$path" 2>"$tmp.err")" || code=000
   if [[ "$code" =~ ^2 ]]; then
     cat "$tmp"; rm -f "$tmp" "$tmp.err"; return 0
+  fi
+  if [ "$code" = 403 ] && grep -q agent_pending "$tmp" 2>/dev/null; then
+    debug "agent en attente d'approbation (voir : san register --status)"
   fi
   debug "$method $path -> HTTP $code $(head -c 200 "$tmp.err" 2>/dev/null) $(head -c 200 "$tmp" 2>/dev/null)"
   rm -f "$tmp" "$tmp.err"
@@ -220,6 +232,127 @@ cmd_fetch_voice() {
   fi
 }
 
+# --- enrôlement -------------------------------------------------------------
+
+# Écrit SAN_TOKEN (et SAN_URL s'il manque) dans le fichier d'env, sans toucher aux
+# autres lignes. Création/remplacement atomique en 0600.
+write_env() { # fichier token url
+  local f="$1" token="$2" url="$3" line tmp have_url=0 have_tok=0 dir
+  dir="$(dirname "$f")"
+  mkdir -p "$dir" 2>/dev/null || return 1
+  tmp="$(umask 077; mktemp "$dir/.agent.env.XXXXXX")" || return 1
+  if [ -f "$f" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "${line#export }" in
+        SAN_TOKEN=*) have_tok=1; printf 'SAN_TOKEN=%s\n' "$token" ;;
+        SAN_URL=*) have_url=1; printf '%s\n' "$line" ;;
+        *) printf '%s\n' "$line" ;;
+      esac
+    done <"$f" >"$tmp"
+  fi
+  [ "$have_url" = 1 ] || printf 'SAN_URL=%s\n' "$url" >>"$tmp"
+  [ "$have_tok" = 1 ] || printf 'SAN_TOKEN=%s\n' "$token" >>"$tmp"
+  chmod 600 "$tmp" && mv -f "$tmp" "$f" || { rm -f "$tmp"; return 1; }
+}
+
+# Valeur d'une clé JSON à chaîne simple (sans jq).
+json_get() { # clé json
+  printf '%s' "$2" | tr -d '\n' | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" | head -n1
+}
+
+cmd_register_status() {
+  read_env_file
+  [ -n "$SAN_URL" ] || { echo "san: SAN_URL non défini" >&2; exit 1; }
+  [ -n "$SAN_TOKEN" ] || { echo "san: aucun SAN_TOKEN : lancer d'abord « san register <slug> »" >&2; exit 1; }
+  command -v curl >/dev/null 2>&1 || { echo "san: curl introuvable" >&2; exit 1; }
+  local tmp code body st
+  tmp="$(mktemp)" || exit 1
+  code="$(curl -sS -o "$tmp" -w '%{http_code}' --connect-timeout "$SAN_CONNECT_TIMEOUT" --max-time "$SAN_MAX_TIME" \
+    --config <(printf 'header = "Authorization: Bearer %s"\n' "$SAN_TOKEN") \
+    "${SAN_URL%/}/api/v1/agent/status" 2>/dev/null)" || code=000
+  body="$(cat "$tmp")"; rm -f "$tmp"
+  case "$code" in
+    200)
+      st="$(json_get status "$body")"
+      case "$st" in
+        active) echo "active : l'agent est approuvé et opérationnel." ;;
+        pending) echo "pending : en attente d'approbation par l'administrateur." ;;
+        *) echo "san: réponse inattendue du serveur" >&2; exit 1 ;;
+      esac ;;
+    401) echo "rejeté ou révoqué : l'agent n'existe plus côté serveur (relancer « san register --force »)." >&2; exit 1 ;;
+    000) echo "san: serveur injoignable ($SAN_URL)" >&2; exit 1 ;;
+    *) echo "san: échec du statut (HTTP $code)" >&2; exit 1 ;;
+  esac
+}
+
+cmd_register() {
+  local slug="" name="" etok="${SAN_ENROLLMENT_TOKEN:-}" force=0 status=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --status) status=1; shift ;;
+      --force) force=1; shift ;;
+      --name) name="${2:-}"; shift 2 || die_usage "--name attend une valeur" ;;
+      --enrollment-token)
+        [ $# -ge 2 ] || die_usage "--enrollment-token attend une valeur (ou - pour stdin)"
+        if [ "$2" = - ]; then IFS= read -r etok || true; else etok="$2"; fi
+        shift 2 ;;
+      -*) die_usage "register: option inconnue : $1" ;;
+      *) if [ -z "$slug" ]; then slug="$1"; else die_usage "argument inattendu : $1"; fi; shift ;;
+    esac
+  done
+  if [ "$status" = 1 ]; then cmd_register_status; return; fi
+  [ -n "$slug" ] || die_usage "register: slug requis (san register <slug>)"
+  if [ -n "$etok" ]; then
+    case "$etok" in enr_*) ;; *) die_usage "jeton d'enrôlement invalide (préfixe enr_ attendu)" ;; esac
+    case "$etok" in *[!A-Za-z0-9_-]*) die_usage "jeton d'enrôlement invalide" ;; esac
+  fi
+  read_env_file
+  [ -n "$SAN_URL" ] || { echo "san: SAN_URL non défini (variable ou fichier d'env)" >&2; exit 1; }
+  command -v curl >/dev/null 2>&1 || { echo "san: curl introuvable" >&2; exit 1; }
+  local envf="${SAN_ENV_FILE:-$HOME/.config/san/agent.env}"
+  if [ -n "$SAN_TOKEN" ] && [ "$force" = 0 ]; then
+    echo "san: un SAN_TOKEN existe déjà : rien n'a été fait (utiliser --force pour enrôler à nouveau et le remplacer)." >&2
+    exit 1
+  fi
+  local body; body="{\"slug\":$(json_str "$slug")"
+  [ -n "$name" ] && body="$body,\"name\":$(json_str "$name")"
+  [ -n "$etok" ] && body="$body,\"enrollment_token\":\"$etok\""
+  body="$body}"
+  local tmp hdr code resp
+  tmp="$(umask 077; mktemp)" || exit 1; hdr="$tmp.h"
+  # Corps lu sur stdin (--data-binary @-) : le jeton enr_ n'apparaît pas dans ps.
+  code="$(printf '%s' "$body" | curl -sS -o "$tmp" -D "$hdr" -w '%{http_code}' -X POST \
+    --connect-timeout "$SAN_CONNECT_TIMEOUT" --max-time "$SAN_MAX_TIME" \
+    -H 'Content-Type: application/json' --data-binary @- \
+    "${SAN_URL%/}/api/v1/agent/register" 2>/dev/null)" || code=000
+  resp="$(cat "$tmp")"
+  local retry; retry="$(sed -n 's/^[Rr]etry-[Aa]fter:[[:space:]]*\([0-9]*\).*/\1/p' "$hdr" 2>/dev/null | head -n1)"
+  rm -f "$tmp" "$hdr"
+  case "$code" in
+    201)
+      local token st grp
+      token="$(json_get token "$resp")"; st="$(json_get status "$resp")"; grp="$(json_get group "$resp")"
+      case "$token" in agt_*) ;; *) echo "san: réponse inattendue du serveur (jeton absent)" >&2; exit 1 ;; esac
+      if ! write_env "$envf" "$token" "${SAN_URL%/}"; then
+        echo "san: impossible d'écrire $envf ; l'agent « $slug » est créé mais son jeton est perdu (utiliser un autre slug)." >&2
+        exit 1
+      fi
+      if [ "$st" = active ]; then
+        echo "Agent « $slug » enrôlé et actif${grp:+ (groupe $grp)}. Jeton enregistré dans $envf."
+      else
+        echo "Agent « $slug » enregistré, en attente d'approbation par l'administrateur. Jeton enregistré dans $envf."
+        echo "Vérifier plus tard avec : san register --status"
+      fi ;;
+    401) echo "san: jeton d'enrôlement invalide, révoqué ou expiré." >&2; exit 1 ;;
+    409) echo "san: l'identifiant « $slug » est déjà pris (choisir un autre slug)." >&2; exit 1 ;;
+    400) echo "san: identifiant ou requête invalide (slug : « $slug »)." >&2; exit 1 ;;
+    413) echo "san: requête trop volumineuse." >&2; exit 1 ;;
+    429) echo "san: trop de demandes${retry:+ ; réessayer dans ${retry} s}." >&2; exit 1 ;;
+    000) echo "san: serveur injoignable ($SAN_URL)" >&2; exit 1 ;;
+    *) echo "san: échec de l'enrôlement (HTTP $code)" >&2; exit 1 ;;
+  esac
+}
+
 main() {
   local cmd="${1:-}"
   [ $# -gt 0 ] && shift
@@ -230,6 +363,7 @@ main() {
     voice) cmd_voice "$@" ;;
     inbox) cmd_inbox "$@" ;;
     fetch-voice) cmd_fetch_voice "$@" ;;
+    register) cmd_register "$@" ;;
     -h|--help|help|'') usage; [ -z "$cmd" ] && exit 2; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac

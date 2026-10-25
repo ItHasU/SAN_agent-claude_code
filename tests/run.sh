@@ -160,6 +160,86 @@ SAN_STRICT=1 SAN_URL="$URL" SAN_TOKEN=mauvais "$SAN" state idle >/dev/null 2>&1;
 [ "$rc" = 1 ] && ok "401 + SAN_STRICT=1: code 1" || ko "401 strict: code $rc"
 reset_log
 
+# --- enrôlement -------------------------------------------------------------
+echo "== bin/san : register"
+ENR=enr_goodtoken
+EF="$TMP/reg/agent.env"
+regrun() { SAN_URL="$URL" SAN_ENV_FILE="$EF" "$SAN" register "$@"; }
+reset_log; rm -rf "$TMP/reg"
+out="$(regrun mon/agent --name "Mon agent" --enrollment-token "$ENR" 2>&1)"; rc=$?
+[ "$rc" = 0 ] && printf '%s' "$out" | grep -q 'actif (groupe equipe)' && ok "register actif: code 0, message avec groupe" || ko "register actif rc=$rc out=$out"
+check "register: POST /agent/register sans Authorization, corps JSON" req 0 "r['path']=='/api/v1/agent/register' and 'authorization' not in r['headers'] and r['body']=={'slug':'mon/agent','name':'Mon agent','enrollment_token':'$ENR'}"
+check "register: SAN_TOKEN et SAN_URL écrits" bash -c "grep -qx 'SAN_TOKEN=agt_SECRETNEW' '$EF' && grep -qx 'SAN_URL=$URL' '$EF'"
+[ "$(ls -l "$EF" | cut -c1-10)" = "-rw-------" ] && ok "register: fichier d'env en 0600" || ko "register: permissions"
+printf '%s' "$out" | grep -q 'agt_\|enr_' && ko "register: jeton affiché dans la sortie" || ok "register: aucun jeton dans la sortie"
+
+# ne pas écraser ; autres variables conservées ; --force
+printf 'SAN_NUDGE_START=1\n# note\nSAN_TOKEN=agt_ancien\nSAN_URL=%s\nAUTRE=x y\n' "$URL" >"$EF"
+reset_log
+out="$(regrun a1 --enrollment-token "$ENR" 2>&1)"; rc=$?
+[ "$rc" = 1 ] && [ "$(count)" = 0 ] && grep -qx 'SAN_TOKEN=agt_ancien' "$EF" && ok "register: n'écrase pas un SAN_TOKEN existant (aucune requête)" || ko "register sans --force rc=$rc"
+out="$(regrun a1 --enrollment-token "$ENR" --force 2>&1)"; rc=$?
+[ "$rc" = 0 ] && grep -qx 'SAN_TOKEN=agt_SECRETNEW' "$EF" && ! grep -q agt_ancien "$EF" && ok "register --force: remplace le jeton" || ko "register --force rc=$rc"
+check "register --force: autres variables conservées" bash -c "grep -qx 'SAN_NUDGE_START=1' '$EF' && grep -qx '# note' '$EF' && grep -qx 'AUTRE=x y' '$EF' && [ \$(grep -c '^SAN_TOKEN=' '$EF') = 1 ]"
+printf '%s' "$out" | grep -q 'agt_\|enr_' && ko "register --force: jeton affiché" || ok "register --force: aucun jeton dans la sortie"
+
+# pending
+rm -f "$EF"; reset_log
+out="$(regrun p1 2>&1)"; rc=$?
+[ "$rc" = 0 ] && printf '%s' "$out" | grep -q "attente d'approbation" && printf '%s' "$out" | grep -q 'san register --status' && ok "register pending: message et rappel --status" || ko "register pending rc=$rc out=$out"
+check "register pending: pas d'enrollment_token envoyé" req 0 "r['body']=={'slug':'p1'}"
+grep -qx 'SAN_TOKEN=agt_PENDINGTOK' "$EF" && ok "register pending: jeton enregistré" || ko "register pending: jeton"
+printf '%s' "$out" | grep -q 'agt_\|enr_' && ko "register pending: jeton affiché" || ok "register pending: aucun jeton dans la sortie"
+
+# erreurs
+rm -f "$EF"
+out="$(regrun a --enrollment-token enr_mauvais 2>&1)"; rc=$?
+[ "$rc" = 1 ] && printf '%s' "$out" | grep -q "jeton d'enrôlement invalide" && [ ! -e "$EF" ] && ok "register 401: message, rien écrit" || ko "register 401 rc=$rc out=$out"
+printf '%s' "$out" | grep -q 'enr_' && ko "register 401: jeton affiché" || ok "register 401: jeton absent de la sortie"
+out="$(regrun taken 2>&1)"; rc=$?
+[ "$rc" = 1 ] && printf '%s' "$out" | grep -q "déjà pris" && [ ! -e "$EF" ] && ok "register 409: slug pris" || ko "register 409 rc=$rc out=$out"
+out="$(regrun limited 2>&1)"; rc=$?
+[ "$rc" = 1 ] && printf '%s' "$out" | grep -q "trop de demandes" && printf '%s' "$out" | grep -q '7 s' && ok "register 429: trop de demandes + Retry-After" || ko "register 429 rc=$rc out=$out"
+out="$(regrun "bad slug" 2>&1)"; rc=$?
+[ "$rc" = 1 ] && printf '%s' "$out" | grep -q "invalide" && ok "register 400: invalide" || ko "register 400 rc=$rc"
+out="$(SAN_URL=http://127.0.0.1:1 SAN_ENV_FILE="$EF" "$SAN" register x 2>&1)"; rc=$?
+[ "$rc" = 1 ] && printf '%s' "$out" | grep -q injoignable && ok "register: serveur injoignable" || ko "register injoignable rc=$rc"
+regrun >/dev/null 2>&1; rc=$?
+[ "$rc" = 2 ] && ok "register sans slug: code 2" || ko "register sans slug rc=$rc"
+regrun x --enrollment-token abc >/dev/null 2>&1; rc=$?
+[ "$rc" = 2 ] && ok "register: jeton sans préfixe enr_ refusé (code 2)" || ko "register jeton mal formé rc=$rc"
+
+# jeton d'enrôlement par l'environnement et par stdin
+rm -f "$EF"; reset_log
+SAN_ENROLLMENT_TOKEN="$ENR" regrun e1 >/dev/null 2>&1
+check "register: SAN_ENROLLMENT_TOKEN pris en compte" req 0 "r['body'].get('enrollment_token')=='$ENR'"
+rm -f "$EF"; reset_log
+printf '%s\n' "$ENR" | regrun e2 --enrollment-token - >/dev/null 2>&1
+check "register --enrollment-token - : lu sur stdin" req 0 "r['body'].get('enrollment_token')=='$ENR'"
+
+# --status
+echo "== bin/san : register --status"
+out="$(SAN_URL="$URL" SAN_TOKEN=agt_PENDINGTOK "$SAN" register --status 2>&1)"; rc=$?
+[ "$rc" = 0 ] && printf '%s' "$out" | grep -q '^pending' && ok "status: pending" || ko "status pending rc=$rc out=$out"
+out="$(SAN_URL="$URL" SAN_TOKEN=agt_SECRETNEW "$SAN" register --status 2>&1)"; rc=$?
+[ "$rc" = 0 ] && printf '%s' "$out" | grep -q '^active' && ok "status: active" || ko "status active rc=$rc out=$out"
+reset_log
+out="$(SAN_URL="$URL" SAN_TOKEN=agt_gone "$SAN" register --status 2>&1)"; rc=$?
+[ "$rc" = 1 ] && printf '%s' "$out" | grep -q 'rejeté ou révoqué' && ok "status 401: rejeté ou révoqué" || ko "status 401 rc=$rc out=$out"
+check "status: GET /agent/status avec Bearer" req 0 "r['method']=='GET' and r['path']=='/api/v1/agent/status' and r['headers']['authorization']=='Bearer agt_gone'"
+printf '%s' "$out" | grep -q 'agt_' && ko "status: jeton affiché" || ok "status: jeton absent de la sortie"
+out="$(SAN_URL="$URL" SAN_ENV_FILE="$TMP/inexistant" "$SAN" register --status 2>&1)"; rc=$?
+[ "$rc" = 1 ] && ok "status sans jeton: erreur claire" || ko "status sans jeton rc=$rc"
+
+# agent pending : les commandes restent silencieuses (code 0) ; message seulement en debug
+out="$(SAN_URL="$URL" SAN_TOKEN=agt_PENDINGTOK "$SAN" state idle 2>&1)"; rc=$?
+[ "$rc" = 0 ] && [ -z "$out" ] && ok "agent pending: state silencieux, code 0" || ko "agent pending rc=$rc out=$out"
+out="$(SAN_DEBUG=1 SAN_URL="$URL" SAN_TOKEN=agt_PENDINGTOK "$SAN" state idle 2>&1)"
+printf '%s' "$out" | grep -q 'san register --status' && ok "agent pending: SAN_DEBUG indique san register --status" || ko "agent pending debug: $out"
+out="$(printf '{"session_id":"pend"}' | SAN_URL="$URL" SAN_TOKEN=agt_PENDINGTOK "$ROOT/hooks/stop.sh" 2>&1)"; rc=$?
+[ "$rc" = 0 ] && [ -z "$out" ] && ok "agent pending: hook Stop silencieux, code 0" || ko "hook pending rc=$rc out=$out"
+reset_log
+
 # --- hooks -------------------------------------------------------------------
 echo "== hooks"
 run_hook() { # nom json  (serveur configuré)
