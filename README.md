@@ -71,15 +71,29 @@ dans le contexte de Claude).
 | Événement Claude Code | État SAN | Détails |
 |---|---|---|
 | `SessionStart` | `idle` « Session démarrée » | ttl 1800 s |
-| `UserPromptSubmit` | `working` (+ nudge `start` « Début du travail » si `SAN_NUDGE_START=1`) | detail = début du prompt, 60 caractères max, secrets masqués (jetons, `password=…`, longues chaînes opaques) ; ttl 900 s. Nudge `start` : désactivé par défaut, un seul par tour de travail (voir ci-dessous) |
+| `UserPromptSubmit` | `working` (réflexion), **aucun son** (+ nudge `start` « Début du travail » envoyé avant l'état si `SAN_NUDGE_START=1`) | detail = début du prompt, 60 caractères max, secrets masqués (jetons, `password=…`, longues chaînes opaques) ; ttl 900 s. Nudge `start` : désactivé par défaut, un seul par tour de travail (voir ci-dessous) |
 | `PostToolUse` | `working` | detail « Edit foo.ts » (nom de fichier sans chemin ; pour `Bash`, seulement le premier mot de la commande) ; au plus un appel toutes les 10 s (`SAN_TOOL_THROTTLE_S`) ; ttl 900 s |
-| `Notification` (`permission_prompt`, `idle_prompt`, `elicitation_dialog`) | `waiting` + nudge `question` (`high`) | texte = message de la notification (80 car. max) ; ttl 1800 s |
+| `Notification` (`permission_prompt`, `elicitation_dialog`) | nudge `question` (`high`) **seul**, sans `state` | texte = message de la notification (80 car. max). `idle_prompt` est ignoré (doublon sonore après `Stop`, écraserait « prêt ») |
 | `Stop` | `done` « Tâche terminée » + nudge `done` (priorité normale) « Tâche terminée » | ttl 3600 s. **Si des sous-agents sont actifs** : ni `done` ni nudge, mais `working` « N sous-agent(s) en cours » (ttl 900 s) |
 | `SubagentStart` / `SubagentStop` | rien (tenue du compteur de sous-agents actifs) | voir ci-dessous |
 | `StopFailure` (tour terminé sur erreur d'API) | `error` « Erreur : <type> » + nudge `error` (`high`) | `<type>` = champ `error` du hook (`rate_limit`, `overloaded`, `authentication_failed`…), sinon « Erreur » ; ttl 1800 s (`SAN_TTL_ERROR`) |
 | `SessionEnd` | `idle` « Session terminée » | ttl 300 s |
 
 `SessionStart` n'envoie pas de nudge.
+
+**Carte M5StickS3** : plus de file de notifications ni d'acquittement. Chaque agent y a une
+icône = dernier statut reçu (coche verte = prêt/terminé, `!` = problème, `?` = question,
+animation = réflexion) et une pastille de vocaux en attente. La carte sélectionne
+automatiquement l'agent dont le statut ou les vocaux changent (vocal > question > problème >
+prêt ; « réflexion » ne déclenche rien, rien non plus pendant un enregistrement) et peut lire
+les vocaux automatiquement (réglage « lecture auto », oui par défaut).
+
+**Type de nudge = son et statut** : le `type` détermine le son (marimba, un seul par événement
+important) et, côté serveur SAN, le statut affiché : `question` -> `?`, `error` -> `!`,
+`done` -> coche verte ; `state working` -> réflexion. Les hooks respectent cette règle sans
+doublon : `Notification` n'envoie que le nudge `question` (un `state` avant ou après ferait
+flasher une icône intermédiaire ou écraserait `?`) ; `Stop` et `StopFailure` envoient l'état
+puis le nudge, tous deux vers la même icône. Le serveur peut ajuster cette correspondance.
 
 **Sous-agents** : les événements `SubagentStart` / `SubagentStop` (champs `agent_id`, `agent_type`)
 alimentent un registre par session dans `SAN_STATE_DIR` (`<session>.subagents`, une ligne
@@ -117,7 +131,10 @@ serait trop bavard. Seul `StopFailure` (le tour s'arrête réellement sur une er
 Les TTL font passer l'état en `stale` côté serveur si la session meurt sans `SessionEnd`.
 Les appels partent en arrière-plan pour ne pas ralentir Claude Code
 (`SAN_HOOK_SYNC=1` pour les rendre synchrones). Les TTL se règlent par `SAN_TTL_WORKING`,
-`SAN_TTL_WAITING`, `SAN_TTL_IDLE`, `SAN_TTL_DONE`, `SAN_TTL_ERROR`, `SAN_TTL_ENDED`.
+`SAN_TTL_IDLE`, `SAN_TTL_DONE`, `SAN_TTL_ERROR`, `SAN_TTL_ENDED`.
+
+Un `say` publié par l'agent apparaît sur la carte comme vocal en attente (pastille) et peut
+être lu automatiquement.
 
 La skill `san` (chargée automatiquement par Claude quand c'est pertinent) lui apprend à
 prévenir l'utilisateur par `say` quand une validation est requise et à consulter l'inbox ;
@@ -127,7 +144,7 @@ message vocal reçu est un fichier audio que Claude ne peut pas écouter sans ou
 ## Usage manuel
 
 ```sh
-san state working "Migration" --progress 40 --ttl 900   # idle|working|waiting|error|done
+san state working "Migration" --progress 40 --ttl 900   # idle|working|waiting|error|done (pour une question, préférer le nudge question)
 san nudge "Validation requise" --type question --high   # types : start|notification|question|done|error
 san say "J'ai terminé."                                  # message vocal (TTS serveur)
 san voice message.wav                                    # envoi d'un fichier audio (wav, mp3, ogg)
@@ -147,7 +164,7 @@ SAN_URL=https://san.example.org SAN_TOKEN=agt_xxx tools/fake-agent.sh --interval
 tools/fake-agent.sh --once --interval 1
 ```
 
-Il rejoue en boucle (en variant les types de nudge : `start`, `question`, `error`, `done`, défaut) : `idle`, `working` avec progression, `waiting` + nudge `question` `high` + `say`,
+Il rejoue en boucle (types de nudge `question`, `error`, `done`, défaut) : `idle`, `working` avec progression, nudge `question` `high` + `say`,
 lecture de l'inbox (avec acquittement), `error`, puis `done`. `Ctrl-C` repasse l'agent en `idle`.
 
 ## Tests

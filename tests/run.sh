@@ -196,14 +196,14 @@ check "PostToolUse Grep -> « Grep »" req 2 "r['body']['detail']=='Grep'"
 
 reset_log
 run_hook notification "{$S,\"notification_type\":\"permission_prompt\",\"message\":\"Claude needs your permission to use Bash\"}" >/dev/null
-check "Notification -> state waiting" req 0 "r['path']=='/api/v1/agent/state' and r['body']['status']=='waiting' and r['body']['ttl_s']>0 and $AUTH"
-check "Notification -> nudge type question" req 1 "r['body']['type']=='question' and r['body']['priority']=='high' and r['path']=='/api/v1/agent/nudge' and 'permission' in r['body']['text'] and $AUTH"
+check "Notification -> nudge type question" req 0 "r['body']['type']=='question' and r['body']['priority']=='high' and r['path']=='/api/v1/agent/nudge' and 'permission' in r['body']['text'] and $AUTH"
+[ "$(count)" = 1 ] && ok "Notification: nudge seul, aucun state (pas d'icône intermédiaire)" || ko "Notification: $(count) requêtes"
 reset_log
 run_hook notification "{$S,\"notification_type\":\"idle_prompt\",\"message\":\"Claude is waiting for your input\"}" >/dev/null
-check "Notification idle_prompt -> nudge type question" req 1 "r['path']=='/api/v1/agent/nudge' and r['body']['type']=='question'"
+[ "$(count)" = 0 ] && ok "Notification idle_prompt ignorée (pas de doublon après Stop)" || ko "idle_prompt non ignorée"
 reset_log
 run_hook post-tool-use "{$S,\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"a.ts\"}}" >/dev/null
-[ "$(count)" = 1 ] && ok "après waiting: le throttling est levé" || ko "throttle après waiting"
+[ "$(count)" = 1 ] && ok "après Notification: le throttling est levé" || ko "throttle après Notification"
 reset_log
 run_hook notification "{$S,\"notification_type\":\"auth_success\",\"message\":\"ok\"}" >/dev/null
 [ "$(count)" = 0 ] && ok "Notification auth_success ignorée" || ko "auth_success non ignorée"
@@ -242,13 +242,14 @@ run_hook user-prompt-submit "{$S,\"prompt\":\"Premier prompt\"}" >/dev/null
 [ "$(count)" = 1 ] && check "nudge start désactivé par défaut: working seul" req 0 "r['body']['status']=='working'" || ko "nudge start par défaut: $(count) requêtes"
 reset_log; rm -rf "$SAN_STATE_DIR"
 printf '%s' "{$S,\"prompt\":\"Premier prompt\"}" | SAN_NUDGE_START=1 SAN_URL="$URL" SAN_TOKEN="$TOKEN" "$ROOT/hooks/user-prompt-submit.sh"
-check "nudge start activé: working puis nudge start" req 1 "r['path']=='/api/v1/agent/nudge' and r['body']['type']=='start' and $AUTH"
+check "nudge start activé: nudge start puis working (icône finale = réflexion)" req 0 "r['path']=='/api/v1/agent/nudge' and r['body']['type']=='start' and $AUTH"
+check "nudge start activé: working en dernier" req 1 "r['path']=='/api/v1/agent/state' and r['body']['status']=='working'"
 [ "$(count)" = 2 ] && ok "nudge start activé: 2 requêtes" || ko "nudge start activé: $(count) requêtes"
 printf '%s' "{$S,\"prompt\":\"Deuxième prompt enchaîné\"}" | SAN_NUDGE_START=1 SAN_URL="$URL" SAN_TOKEN="$TOKEN" "$ROOT/hooks/user-prompt-submit.sh"
 [ "$(count)" = 3 ] && ok "nudge start: pas de doublon sur prompts enchaînés" || ko "doublon nudge start: $(count) requêtes"
 run_hook stop "{$S}" >/dev/null
 printf '%s' "{$S,\"prompt\":\"Nouveau tour\"}" | SAN_NUDGE_START=1 SAN_URL="$URL" SAN_TOKEN="$TOKEN" "$ROOT/hooks/user-prompt-submit.sh"
-check "nudge start: de nouveau après Stop" req 6 "r['path']=='/api/v1/agent/nudge' and r['body']['type']=='start'"
+check "nudge start: de nouveau après Stop" req 5 "r['path']=='/api/v1/agent/nudge' and r['body']['type']=='start'"
 echo $(($(date +%s) - 1000)) >"$SAN_STATE_DIR/sess-1.last"
 reset_log
 printf '%s' "{$S,\"prompt\":\"Après longue pause\"}" | SAN_NUDGE_START=1 SAN_URL="$URL" SAN_TOKEN="$TOKEN" "$ROOT/hooks/user-prompt-submit.sh"
@@ -273,7 +274,7 @@ reset_log
 printf '%s' "{$S,\"prompt\":\"x\"}" | PATH="$NOJQ" SAN_NUDGE_START=1 SAN_URL="$URL" SAN_TOKEN="$TOKEN" "$ROOT/hooks/user-prompt-submit.sh"
 rm -rf "$SAN_STATE_DIR"
 printf '%s' "{$S,\"prompt\":\"x\"}" | PATH="$NOJQ" SAN_NUDGE_START=1 SAN_URL="$URL" SAN_TOKEN="$TOKEN" "$ROOT/hooks/user-prompt-submit.sh"
-check "sans jq: nudge start" req 3 "r['body'].get('type')=='start'"
+check "sans jq: nudge start" req 2 "r['body'].get('type')=='start'"
 
 echo "== hooks : sous-agents actifs (SubagentStart / SubagentStop)"
 SA="\"session_id\":\"sa-1\""
@@ -405,16 +406,16 @@ echo "== tools/fake-agent.sh"
 reset_log
 configured "$ROOT/tools/fake-agent.sh" --once --interval 0 >/dev/null 2>&1; rc=$?
 [ "$rc" = 0 ] && ok "fake-agent --once: code 0" || ko "fake-agent rc=$rc"
-check "fake-agent: états working/waiting/error/done publiés" python3 -I -c '
+check "fake-agent: états working/error/done publiés, pas de waiting ni de nudge start" python3 -I -c '
 import json,sys
 rs=[json.loads(l) for l in open(sys.argv[1])]
 st={r["body"]["status"] for r in rs if r["path"].endswith("/state")}
-assert {"idle","working","waiting","error","done"} <= st, st
+assert {"idle","working","error","done"} <= st and "waiting" not in st, st
 assert any(r["path"].endswith("/say") for r in rs)
 assert any(r["path"].endswith("/nudge") and r["body"].get("priority")=="high" and r["body"].get("type")=="question" for r in rs)
 assert any(r["path"].endswith("/inbox") for r in rs)
 nt=[r["body"].get("type","notification") for r in rs if r["path"].endswith("/nudge")]
-assert {"start","question","error","done","notification"} <= set(nt), nt
+assert {"question","error","done","notification"} <= set(nt) and "start" not in nt, nt
 assert any("progress" in r["body"] for r in rs if r["path"].endswith("/state"))' "$LOG"
 
 # --- install.sh --------------------------------------------------------------

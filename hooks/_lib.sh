@@ -12,7 +12,6 @@ SAN_BIN="${SAN_BIN:-$HOOK_DIR/../bin/san}"
 
 # TTL (secondes) des états publiés : l'état devient "stale" si la session meurt.
 TTL_WORKING="${SAN_TTL_WORKING:-900}"
-TTL_WAITING="${SAN_TTL_WAITING:-1800}"
 TTL_IDLE="${SAN_TTL_IDLE:-1800}"
 TTL_DONE="${SAN_TTL_DONE:-3600}"
 TTL_ENDED="${SAN_TTL_ENDED:-300}"

@@ -14,8 +14,9 @@ fi
 mark_throttle
 # shellcheck disable=SC2329  # appelée via bg
 prompt_flow() {
-  san_call state working "$detail" --ttl "$TTL_WORKING"
+  # nudge start (optionnel) AVANT l'état : l'icône finale reste « réflexion »
   [ "$start" = 1 ] && san_call nudge "Début du travail" --type start
+  san_call state working "$detail" --ttl "$TTL_WORKING"
   return 0
 }
 bg prompt_flow

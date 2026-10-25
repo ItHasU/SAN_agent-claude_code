@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Hook Stop : Claude a fini de répondre -> done + nudge « Tâche terminée ».
+# Hook Stop : Claude a fini de répondre -> done puis nudge done (même état « prêt » : pas de flash).
 # Si des sous-agents sont encore actifs (background_tasks, sinon registre SubagentStart/Stop) : pas de done ni de nudge, on republie `working`.
 # shellcheck source=hooks/_lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/_lib.sh" 2>/dev/null || exit 0
