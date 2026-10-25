@@ -275,8 +275,83 @@ rm -rf "$SAN_STATE_DIR"
 printf '%s' "{$S,\"prompt\":\"x\"}" | PATH="$NOJQ" SAN_NUDGE_START=1 SAN_URL="$URL" SAN_TOKEN="$TOKEN" "$ROOT/hooks/user-prompt-submit.sh"
 check "sans jq: nudge start" req 3 "r['body'].get('type')=='start'"
 
+echo "== hooks : sous-agents actifs (SubagentStart / SubagentStop)"
+SA="\"session_id\":\"sa-1\""
+sub_start() { run_hook subagent-start "{$SA,\"hook_event_name\":\"SubagentStart\",\"agent_id\":\"$1\",\"agent_type\":\"Explore\"}"; }
+sub_stop() { run_hook subagent-stop "{${2:-$SA},\"hook_event_name\":\"SubagentStop\",\"agent_id\":\"${1:-}\",\"agent_type\":\"Explore\",\"stop_hook_active\":false}"; }
+sa_stop_main() { run_hook stop "{${1:-$SA},\"hook_event_name\":\"Stop\",\"stop_hook_active\":false}"; }
+rm -rf "$SAN_STATE_DIR"; reset_log
+sa_stop_main >/dev/null
+check "sous-agents: Stop sans sous-agent -> done + nudge done" req 1 "r['path']=='/api/v1/agent/nudge' and r['body']['type']=='done'"
+reset_log
+out="$(sub_start a1)"
+[ -z "$out" ] && [ "$(count)" = 0 ] && ok "SubagentStart: silencieux, aucune requête" || ko "SubagentStart sortie/requêtes"
+sa_stop_main >/dev/null
+[ "$(count)" = 1 ] && check "sous-agents: 1 actif -> Stop publie working (« 1 sous-agent en cours »)" req 0 "r['path']=='/api/v1/agent/state' and r['body']['status']=='working' and r['body']['detail']=='1 sous-agent en cours' and r['body']['ttl_s']==900" || ko "1 actif: $(count) requêtes"
+check "sous-agents: 1 actif -> pas de done ni de nudge" bash -c "! grep -q '\"done\"\\|nudge' '$LOG'"
+reset_log
+sub_start a2 >/dev/null; sub_stop a1 >/dev/null
+sa_stop_main >/dev/null
+check "sous-agents: 2 starts / 1 stop -> toujours actif" req 0 "r['body']['status']=='working' and r['body']['detail']=='1 sous-agent en cours'"
+reset_log
+sub_start a3 >/dev/null; sub_start a3 >/dev/null
+sa_stop_main >/dev/null
+check "sous-agents: SubagentStart répété (même id) idempotent -> 2 actifs" req 0 "r['body']['detail']=='2 sous-agents en cours'"
+reset_log
+out="$(sub_stop a2; sub_stop a3)"
+[ -z "$out" ] && [ "$(count)" = 0 ] && ok "SubagentStop: silencieux, aucune requête (pas de done inventé)" || ko "SubagentStop sortie/requêtes"
+sa_stop_main >/dev/null
+check "sous-agents: tous terminés -> Stop envoie done" req 0 "r['body']['status']=='done'"
+check "sous-agents: tous terminés -> nudge done" req 1 "r['body']=={'text':'Tâche terminée','type':'done'}"
+reset_log
+sub_stop zzz >/dev/null; sub_stop zzz >/dev/null; sub_stop >/dev/null
+sub_start b1 >/dev/null
+sa_stop_main >/dev/null
+check "sous-agents: décrément borné à 0 (stops en trop ignorés) -> 1 actif" req 0 "r['body']['status']=='working' and r['body']['detail']=='1 sous-agent en cours'"
+sub_stop b1 >/dev/null
+reset_log
+printf 'old1 %s\nold2 %s\n' "$(( $(date +%s) - 7300 ))" "$(( $(date +%s) - 9000 ))" >"$SAN_STATE_DIR/sa-1.subagents"
+sa_stop_main >/dev/null
+check "sous-agents: compteur expiré (> 2 h) -> done" req 0 "r['body']['status']=='done'"
+reset_log
+sub_start c1 >/dev/null
+sa_stop_main '"session_id":"sa-2"' >/dev/null
+check "sous-agents: isolation entre sessions (autre session -> done)" req 0 "r['body']['status']=='done'"
+reset_log
+sub_stop c1 '"session_id":"sa-2"' >/dev/null
+sa_stop_main >/dev/null
+check "sous-agents: SubagentStop d'une autre session sans effet" req 0 "r['body']['status']=='working'"
+reset_log
+run_hook session-start "{$SA}" >/dev/null
+sa_stop_main >/dev/null
+check "sous-agents: SessionStart réinitialise le compteur" req 1 "r['body']['status']=='done'"
+sub_start d1 >/dev/null
+run_hook session-end "{$SA}" >/dev/null
+reset_log; sa_stop_main >/dev/null
+check "sous-agents: SessionEnd réinitialise le compteur" req 0 "r['body']['status']=='done'"
+sub_start d2 >/dev/null
+run_hook stop-failure "{$SA,\"error\":\"rate_limit\"}" >/dev/null
+reset_log; sa_stop_main >/dev/null
+check "sous-agents: StopFailure réinitialise le compteur" req 0 "r['body']['status']=='done'"
+sub_start e1 >/dev/null; sub_start e2 >/dev/null
+pids=""
+for i in 1 2 3 4 5 6; do sub_start "p$i" >/dev/null & pids="$pids $!"; done
+# shellcheck disable=SC2086
+wait $pids
+n="$(grep -c . "$SAN_STATE_DIR/sa-1.subagents")"
+[ "$n" = 8 ] && ok "sous-agents: 8 SubagentStart concurrents -> 8 entrées" || ko "concurrence: $n entrées"
+check "sous-agents: verrou libéré" test ! -d "$SAN_STATE_DIR/sa-1.subagents.lock"
+rm -rf "$SAN_STATE_DIR"; reset_log
+printf '%s' "{$SA,\"agent_id\":\"n1\"}" | PATH="$NOJQ" "$ROOT/hooks/subagent-start.sh"
+printf '%s' "{$SA}" | PATH="$NOJQ" SAN_URL="$URL" SAN_TOKEN="$TOKEN" "$ROOT/hooks/stop.sh"
+check "sans jq: SubagentStart + Stop -> working" req 0 "r['body']['status']=='working'"
+printf '%s' "{$SA,\"agent_id\":\"n1\"}" | PATH="$NOJQ" "$ROOT/hooks/subagent-stop.sh"
+printf '%s' "{$SA}" | PATH="$NOJQ" SAN_URL="$URL" SAN_TOKEN="$TOKEN" "$ROOT/hooks/stop.sh"
+check "sans jq: SubagentStop + Stop -> done" req 1 "r['body']['status']=='done'"
+rm -rf "$SAN_STATE_DIR"; reset_log
+
 echo "== hooks : non configuré / serveur injoignable / entrée vide"
-for h in session-start user-prompt-submit post-tool-use notification stop stop-failure session-end; do
+for h in session-start user-prompt-submit post-tool-use notification stop stop-failure session-end subagent-start subagent-stop; do
   for mode in unconfigured down; do
     rm -rf "$SAN_STATE_DIR"; reset_log
     t0=$(date +%s)
@@ -289,7 +364,7 @@ for h in session-start user-prompt-submit post-tool-use notification stop stop-f
     [ "$rc" = 0 ] && [ -z "$out" ] && [ $((t1 - t0)) -le 4 ] && ok "$h ($mode): code 0, silencieux, rapide" || ko "$h ($mode): rc=$rc out=$out $((t1 - t0))s"
   done
 done
-for h in session-start user-prompt-submit post-tool-use notification stop stop-failure session-end; do
+for h in session-start user-prompt-submit post-tool-use notification stop stop-failure session-end subagent-start subagent-stop; do
   out="$("$ROOT/hooks/$h.sh" </dev/null 2>&1)"; rc=$?
   [ "$rc" = 0 ] && [ -z "$out" ] && ok "$h: stdin vide -> code 0" || ko "$h: stdin vide rc=$rc"
   printf 'pas du json {{{' | "$ROOT/hooks/$h.sh" >/dev/null 2>&1; rc=$?
@@ -323,17 +398,24 @@ JSON
   "$ROOT/install.sh" --project "$P" >/dev/null 2>&1; rc=$?
   [ "$rc" = 0 ] && ok "install: code 0" || ko "install rc=$rc"
   check "install: conserve la config existante" jq -e '.permissions.allow[0]=="Bash(ls)" and (.hooks.Stop|map(.hooks[0].command)|index("echo autre")!=null)' "$P/.claude/settings.json"
-  check "install: 7 événements SAN" jq -e '[.hooks|keys[]] | (index("StopFailure")!=null and index("SessionStart")!=null and index("UserPromptSubmit")!=null and index("PostToolUse")!=null and index("Notification")!=null and index("Stop")!=null and index("SessionEnd")!=null)' "$P/.claude/settings.json"
+  check "install: 9 événements SAN" jq -e '[.hooks|keys[]] | (index("SubagentStart")!=null and index("SubagentStop")!=null and index("StopFailure")!=null and index("SessionStart")!=null and index("UserPromptSubmit")!=null and index("PostToolUse")!=null and index("Notification")!=null and index("Stop")!=null and index("SessionEnd")!=null)' "$P/.claude/settings.json"
   "$ROOT/install.sh" --project "$P" >/dev/null 2>&1
   check "install idempotent (pas de doublon)" jq -e '(.hooks.Stop|length)==2' "$P/.claude/settings.json"
   check "install: StopFailure -> stop-failure.sh (1 seul)" jq -e '(.hooks.StopFailure|length)==1 and (.hooks.StopFailure[0].hooks[0].command|contains("/san/hooks/stop-failure.sh"))' "$P/.claude/settings.json"
   check "install: stop-failure.sh exécutable" test -x "$P/.claude/san/hooks/stop-failure.sh"
+  check "install: subagent-start/stop -> 1 seul chacun" jq -e '(.hooks.SubagentStart|length)==1 and (.hooks.SubagentStop|length)==1 and (.hooks.SubagentStart[0].hooks[0].command|contains("/san/hooks/subagent-start.sh")) and (.hooks.SubagentStop[0].hooks[0].command|contains("/san/hooks/subagent-stop.sh"))' "$P/.claude/settings.json"
+  check "install: hooks sous-agents installés et exécutables" test -x "$P/.claude/san/hooks/subagent-start.sh" -a -x "$P/.claude/san/hooks/subagent-stop.sh"
+  check "settings.example.json: SubagentStart/SubagentStop présents" python3 -I -c 'import json,sys; h=json.load(open(sys.argv[1]))["hooks"]; assert "SubagentStart" in h and "SubagentStop" in h' "$ROOT/settings.example.json"
   # ré-exécution sur une installation antérieure (sans StopFailure)
   P4="$TMP/proj4"; mkdir -p "$P4"
   "$ROOT/install.sh" --project "$P4" >/dev/null 2>&1
   jq 'del(.hooks.StopFailure)' "$P4/.claude/settings.json" >"$TMP/old.json" && mv "$TMP/old.json" "$P4/.claude/settings.json"
   "$ROOT/install.sh" --project "$P4" >/dev/null 2>&1
   check "install: ré-exécution ajoute StopFailure sans doublon" jq -e '(.hooks.StopFailure|length)==1 and (.hooks.Stop|length)==1' "$P4/.claude/settings.json"
+  jq 'del(.hooks.SubagentStart,.hooks.SubagentStop)' "$P4/.claude/settings.json" >"$TMP/old.json" && mv "$TMP/old.json" "$P4/.claude/settings.json"
+  "$ROOT/install.sh" --project "$P4" >/dev/null 2>&1
+  "$ROOT/install.sh" --project "$P4" >/dev/null 2>&1
+  check "install: mise à jour d'une install antérieure ajoute SubagentStart/Stop sans doublon" jq -e '(.hooks.SubagentStart|length)==1 and (.hooks.SubagentStop|length)==1' "$P4/.claude/settings.json"
   check "install: fichiers" test -x "$P/.claude/san/bin/san" -a -x "$P/.claude/san/hooks/stop.sh" -a -f "$P/.claude/skills/san/SKILL.md" -a -f "$P/.claude/commands/san-inbox.md" -a -f "$P/.claude/settings.json.bak"
   check "install: @SAN_BIN@ substitué" bash -c "! grep -q @SAN_BIN@ '$P/.claude/skills/san/SKILL.md' && grep -q '$P/.claude/san/bin/san' '$P/.claude/skills/san/SKILL.md'"
   # le hook installé fonctionne

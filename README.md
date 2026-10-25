@@ -74,11 +74,29 @@ dans le contexte de Claude).
 | `UserPromptSubmit` | `working` (+ nudge `start` « Début du travail » si `SAN_NUDGE_START=1`) | detail = début du prompt, 60 caractères max, secrets masqués (jetons, `password=…`, longues chaînes opaques) ; ttl 900 s. Nudge `start` : désactivé par défaut, un seul par tour de travail (voir ci-dessous) |
 | `PostToolUse` | `working` | detail « Edit foo.ts » (nom de fichier sans chemin ; pour `Bash`, seulement le premier mot de la commande) ; au plus un appel toutes les 10 s (`SAN_TOOL_THROTTLE_S`) ; ttl 900 s |
 | `Notification` (`permission_prompt`, `idle_prompt`, `elicitation_dialog`) | `waiting` + nudge `question` (`high`) | texte = message de la notification (80 car. max) ; ttl 1800 s |
-| `Stop` | `done` « Tâche terminée » + nudge `done` (priorité normale) « Tâche terminée » | ttl 3600 s |
+| `Stop` | `done` « Tâche terminée » + nudge `done` (priorité normale) « Tâche terminée » | ttl 3600 s. **Si des sous-agents sont actifs** : ni `done` ni nudge, mais `working` « N sous-agent(s) en cours » (ttl 900 s) |
+| `SubagentStart` / `SubagentStop` | rien (tenue du compteur de sous-agents actifs) | voir ci-dessous |
 | `StopFailure` (tour terminé sur erreur d'API) | `error` « Erreur : <type> » + nudge `error` (`high`) | `<type>` = champ `error` du hook (`rate_limit`, `overloaded`, `authentication_failed`…), sinon « Erreur » ; ttl 1800 s (`SAN_TTL_ERROR`) |
 | `SessionEnd` | `idle` « Session terminée » | ttl 300 s |
 
 `SessionStart` n'envoie pas de nudge.
+
+**Sous-agents** : les événements `SubagentStart` / `SubagentStop` (champs `agent_id`, `agent_type`)
+alimentent un registre par session dans `SAN_STATE_DIR` (`<session>.subagents`, une ligne
+`agent_id epoch` ; écriture atomique par fichier temporaire + `mv` sous verrou `mkdir`).
+`Stop` y lit le nombre de sous-agents actifs : s'il est > 0, l'agent principal n'est pas
+« terminé » et SAN reçoit `working` au lieu de `done` + nudge. Le `Stop` du tour final, une
+fois les sous-agents finis, publie `done` normalement. Garde-fous :
+
+- un `SubagentStop` pour un `agent_id` inconnu est ignoré (Claude Code lance aussi des agents
+  internes, p. ex. suggestions de prompt ou `/btw`, qui déclenchent `SubagentStop`) : le compteur ne descend jamais sous 0 ;
+- une entrée de plus de 2 h (`SAN_SUBAGENT_MAX_AGE_S`, 7200 par défaut) est ignorée (compteur « fantôme » si un `SubagentStop` s'est perdu) ;
+- `SessionStart`, `SessionEnd` et `StopFailure` vident le registre.
+
+Cas limite : si l'agent principal s'est déjà arrêté (`Stop` publié en `working` à cause d'un
+sous-agent d'arrière-plan) et que le dernier sous-agent finit sans qu'aucun nouveau tour ne
+démarre, `SubagentStop` n'envoie rien : aucun `done` n'est inventé et l'état reste `working`
+jusqu'à l'expiration de son TTL (900 s, puis `stale` côté serveur) ou jusqu'au prochain tour.
 
 **Nudge `start`** : `SAN_NUDGE_START=1` (environnement ou `~/.config/san/agent.env` ; défaut `0`,
 désactivé) envoie `san nudge --type start` au début d'un tour. Pour limiter le bruit, il n'est

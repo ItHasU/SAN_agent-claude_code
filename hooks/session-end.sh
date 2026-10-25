@@ -3,5 +3,6 @@
 # shellcheck source=hooks/_lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/_lib.sh" 2>/dev/null || exit 0
 reset_throttle
+sa_reset
 bg san_call state idle "Session terminée" --ttl "$TTL_ENDED"
 exit 0

@@ -6,6 +6,7 @@
 etype="$(sanitize "$(jget '.error' error)" 40)"
 if [ -n "$etype" ]; then msg="Erreur : $etype"; else msg="Erreur"; fi
 reset_throttle
+sa_reset
 # shellcheck disable=SC2329  # appelée via bg
 failure_flow() {
   san_call state error "$msg" --ttl "$TTL_ERROR"

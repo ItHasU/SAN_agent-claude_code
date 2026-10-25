@@ -99,3 +99,70 @@ last_mark() {
   case "$v" in ''|*[!0-9]*) v=0 ;; esac
   printf '%s' "$v"
 }
+
+# --- Sous-agents actifs (SubagentStart / SubagentStop) ------------------------
+# Registre par session : une ligne « <agent_id> <epoch de démarrage> » dans
+# $STATE_DIR/<session>.subagents. Écriture atomique (fichier temporaire + mv) sous verrou
+# mkdir. Un SubagentStop pour un id inconnu (agents internes de Claude Code : suggestions
+# de prompt, /btw…) est ignoré, donc le décompte ne descend jamais sous 0. Une entrée plus
+# vieille que SUBAGENT_MAX_AGE_S est considérée « fantôme » (SubagentStop perdu) et ignorée.
+SUBAGENT_MAX_AGE_S="${SAN_SUBAGENT_MAX_AGE_S:-7200}"
+SUBAGENT_FILE="$STATE_DIR/$SESSION_KEY.subagents"
+SUBAGENT_LOCK="$STATE_DIR/$SESSION_KEY.subagents.lock"
+
+sa_lock() {
+  local i=0
+  while ! mkdir "$SUBAGENT_LOCK" 2>/dev/null; do
+    i=$((i + 1))
+    if [ "$i" -ge 30 ]; then rmdir "$SUBAGENT_LOCK" 2>/dev/null || true; break; fi  # verrou orphelin
+    sleep 0.1
+  done
+}
+sa_unlock() { rmdir "$SUBAGENT_LOCK" 2>/dev/null || true; }
+
+# sa_rewrite <op> <id> : réécrit le registre sans les entrées expirées.
+#   add : (ré)enregistre <id> ; del : retire <id> (ou la plus ancienne si <id> vide).
+sa_rewrite() {
+  local op="$1" id="$2" t aid ts tmp="$SUBAGENT_FILE.$$.tmp" removed=0
+  t="$(now)"
+  : >"$tmp" 2>/dev/null || return 0
+  if [ -f "$SUBAGENT_FILE" ]; then
+    while read -r aid ts _; do
+      case "$ts" in ''|*[!0-9]*) continue ;; esac
+      [ -n "$aid" ] || continue
+      [ $((t - ts)) -lt "$SUBAGENT_MAX_AGE_S" ] || continue
+      if [ "$op" = add ] && [ "$aid" = "$id" ]; then continue; fi
+      if [ "$op" = del ] && [ "$removed" = 0 ] && { [ -z "$id" ] || [ "$aid" = "$id" ]; }; then
+        removed=1; continue
+      fi
+      printf '%s %s\n' "$aid" "$ts" >>"$tmp"
+    done <"$SUBAGENT_FILE"
+  fi
+  [ "$op" = add ] && printf '%s %s\n' "$id" "$t" >>"$tmp"
+  mv -f "$tmp" "$SUBAGENT_FILE" 2>/dev/null || rm -f "$tmp"
+}
+
+sa_start() { # id (vide -> identifiant synthétique)
+  local id="${1:-anon-$$-$RANDOM}"
+  id="$(printf '%s' "$id" | tr -c 'A-Za-z0-9_.:-' '_' | head -c 64)"
+  sa_lock; sa_rewrite add "$id"; sa_unlock
+}
+sa_stop() { # id
+  local id="$1"
+  [ -z "$id" ] || id="$(printf '%s' "$id" | tr -c 'A-Za-z0-9_.:-' '_' | head -c 64)"
+  sa_lock; sa_rewrite del "$id"; sa_unlock
+}
+sa_reset() { rm -f "$SUBAGENT_FILE" 2>/dev/null || true; }
+
+# sa_count : nombre de sous-agents actifs non expirés (lecture seule, sans verrou).
+sa_count() {
+  local n=0 t aid ts
+  t="$(now)"
+  if [ -f "$SUBAGENT_FILE" ]; then
+    while read -r aid ts _; do
+      case "$ts" in ''|*[!0-9]*) continue ;; esac
+      [ -n "$aid" ] && [ $((t - ts)) -lt "$SUBAGENT_MAX_AGE_S" ] && n=$((n + 1))
+    done <"$SUBAGENT_FILE"
+  fi
+  printf '%s' "$n"
+}
