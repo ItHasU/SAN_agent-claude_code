@@ -47,6 +47,8 @@ Commande : `@SAN_BIN@` (notée `san` ci-dessous). Elle est silencieuse et ne fai
 | `san voice <fichier.wav\|mp3\|ogg>` | Envoie un fichier audio (30 s max) |
 | `san inbox [--wait S] [--ack ID]` | Messages reçus des viewers (JSON) |
 | `san fetch-voice <clip> [--format wav\|mp3\|ogg] [-o fichier]` | Télécharge un message vocal |
+| `san register <slug> [--name NOM] [--enrollment-token enr_…\|-] [--force]` | Enrôle l'agent et écrit `SAN_TOKEN` dans `~/.config/san/agent.env` |
+| `san register --status` | Statut d'enrôlement : `pending` ou `active` |
 
 ## Types de nudge
 
@@ -85,6 +87,14 @@ traitement : `error`). N'envoie pas `state waiting` : utilise le nudge `question
 4. Acquitter les événements traités à l'appel suivant : `san inbox --ack 812` (c'est l'acquittement
    de l'inbox côté API ; la carte, elle, n'a plus d'acquittement de notifications). Les vocaux
    lus sur la carte (lecture auto ou bouton) sont une chose distincte de cette inbox.
+
+## Enrôlement
+
+Si SAN n'est pas configuré (aucun `SAN_TOKEN`), proposer `san register <slug>` (avec le jeton
+`enr_…` de l'administrateur dans `SAN_ENROLLMENT_TOKEN` ou sur stdin via `--enrollment-token -`).
+Ne jamais afficher ni répéter un jeton `agt_`/`enr_`. Sans jeton d'enrôlement, l'agent est
+`pending` jusqu'à approbation par l'administrateur : vérifier avec `san register --status`.
+Tant qu'il est `pending`, les commandes `san` n'ont aucun effet (silencieux) : ne pas insister.
 
 ## Règles
 

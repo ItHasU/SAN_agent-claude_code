@@ -37,7 +37,33 @@ skill/commande modifiée sans `--force`. `--dry-run` affiche le résultat sans r
 Sans installeur : copier `settings.example.json` dans `.claude/settings.json` et adapter
 les chemins (`$CLAUDE_PROJECT_DIR/.claude/san/hooks/…`) vers `hooks/` de ce dépôt.
 
-## Configuration
+## Démarrage rapide (enrôlement automatique)
+
+1. Côté admin SAN : créer un **jeton d'enrôlement** (`enr_…`) lié à un groupe d'agents.
+2. Sur la machine de l'agent :
+
+   ```sh
+   export SAN_URL=https://san.example.org
+   export SAN_ENROLLMENT_TOKEN=enr_xxx          # ou : echo enr_xxx | san register mon-agent --enrollment-token -
+   ./install.sh --global --register mon-agent   # ou : san register mon-agent --enrollment-token enr_xxx
+   ```
+
+   `san register <slug> [--name NOM] [--enrollment-token enr_…|-] [--force]` appelle
+   `POST /agent/register` et écrit `SAN_TOKEN` (et `SAN_URL` s'il manque) dans
+   `~/.config/san/agent.env` (`SAN_ENV_FILE`, `chmod 600`) sans toucher aux autres variables.
+   Il refuse d'écraser un `SAN_TOKEN` existant sauf avec `--force`. Les jetons `agt_`/`enr_`
+   ne sont jamais affichés ; le jeton d'enrôlement est transmis sur stdin à curl (pas visible
+   dans `ps`), préférer `SAN_ENROLLMENT_TOKEN` ou `--enrollment-token -` à l'argument.
+3. Sans jeton d'enrôlement, l'agent est **en attente** : un administrateur doit l'approuver.
+   `san register --status` affiche `pending` ou `active` (« rejeté ou révoqué » si l'agent a été
+   rejeté, purgé ou révoqué). Tant qu'il est `pending`, le serveur répond `403 agent_pending` :
+   `san` et les hooks restent silencieux (code 0) ; avec `SAN_DEBUG=1`, un message renvoie vers
+   `san register --status`.
+
+Codes de retour de `register` : 0 si actif ou en attente ; 1 sinon (jeton d'enrôlement invalide,
+slug déjà pris, trop de demandes, serveur injoignable…) avec un message en français ; 2 pour un usage invalide.
+
+## Configuration manuelle
 
 1. Dans l'interface d'administration SAN, **créer un agent** (nom, identifiant) puis
    **générer son jeton** : `agt_…`. Il n'est affiché qu'une fois (régénérable).
@@ -150,6 +176,8 @@ san say "J'ai terminé."                                  # message vocal (TTS s
 san voice message.wav                                    # envoi d'un fichier audio (wav, mp3, ogg)
 san inbox --wait 30 --ack 812                            # long-poll, acquitte avant lecture
 san fetch-voice c_01J… --format mp3 -o message.mp3
+san register mon-agent --enrollment-token enr_xxx        # enrôlement (voir Démarrage rapide)
+san register --status                                    # pending | active
 ```
 
 Le type de nudge (`--type`) est facultatif ; sans lui le champ n'est pas envoyé et le
