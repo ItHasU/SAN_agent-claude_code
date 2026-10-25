@@ -47,9 +47,19 @@ fail() {
 # Erreur d'usage : toujours visible, code 2.
 die_usage() { printf 'san: %s\n' "$*" >&2; exit 2; }
 
+# Fichier d'env de l'agent : SAN_ENV_FILE, sinon <.claude>/san.env à côté du dossier d'installation
+# (un agent par projet), sinon ~/.config/san/agent.env (un agent par machine).
+default_env_file() {
+  if [ -n "${SAN_ENV_FILE:-}" ]; then printf '%s' "$SAN_ENV_FILE"; return; fi
+  local here; here="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || here=""
+  if [ -n "$here" ] && [ -f "$here/../../san.env" ]; then printf '%s' "$here/../../san.env"; return; fi
+  printf '%s' "$HOME/.config/san/agent.env"
+}
+
 # Lit SAN_URL / SAN_TOKEN du fichier d'env (sans l'exécuter) ; l'environnement prime.
 read_env_file() {
-  local f="${SAN_ENV_FILE:-$HOME/.config/san/agent.env}" line key val
+  local f line key val
+  f="$(default_env_file)"
   if [ -f "$f" ] && [ -r "$f" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
       line="${line#export }"
@@ -309,7 +319,7 @@ cmd_register() {
   read_env_file
   [ -n "$SAN_URL" ] || { echo "san: SAN_URL non défini (variable ou fichier d'env)" >&2; exit 1; }
   command -v curl >/dev/null 2>&1 || { echo "san: curl introuvable" >&2; exit 1; }
-  local envf="${SAN_ENV_FILE:-$HOME/.config/san/agent.env}"
+  local envf; envf="$(default_env_file)"
   if [ -n "$SAN_TOKEN" ] && [ "$force" = 0 ]; then
     echo "san: un SAN_TOKEN existe déjà : rien n'a été fait (utiliser --force pour enrôler à nouveau et le remplacer)." >&2
     exit 1

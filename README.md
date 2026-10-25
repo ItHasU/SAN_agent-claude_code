@@ -50,7 +50,9 @@ les chemins (`$CLAUDE_PROJECT_DIR/.claude/san/hooks/…`) vers `hooks/` de ce d�
 
    `san register <slug> [--name NOM] [--enrollment-token enr_…|-] [--force]` appelle
    `POST /agent/register` et écrit `SAN_TOKEN` (et `SAN_URL` s'il manque) dans
-   `~/.config/san/agent.env` (`SAN_ENV_FILE`, `chmod 600`) sans toucher aux autres variables.
+   le fichier d'env de l'agent (`chmod 600`) sans toucher aux autres variables : avec
+   `install.sh --project DIR --register`, c'est `DIR/.claude/san.env` (un agent par projet) ;
+   sinon `~/.config/san/agent.env` (un agent par machine) ou `SAN_ENV_FILE`.
    Il refuse d'écraser un `SAN_TOKEN` existant sauf avec `--force`. Les jetons `agt_`/`enr_`
    ne sont jamais affichés ; le jeton d'enrôlement est transmis sur stdin à curl (pas visible
    dans `ps`), préférer `SAN_ENROLLMENT_TOKEN` ou `--enrollment-token -` à l'argument.
@@ -75,7 +77,10 @@ slug déjà pris, trop de demandes, serveur injoignable…) avec un message en f
    export SAN_TOKEN=agt_xxx
    ```
 
-   ou par le fichier `~/.config/san/agent.env` (`chmod 600`), lu sans être exécuté :
+   ou par un fichier d'env (`chmod 600`), lu sans être exécuté. Ordre de recherche (le premier
+   trouvé) : `SAN_ENV_FILE`, puis `<projet>/.claude/san.env` (agent du projet), puis
+   `~/.config/san/agent.env` (agent de la machine). Les variables d'environnement priment toujours.
+   Plusieurs agents sur une machine : un `san.env` par projet (`install.sh` l'ignore dans `.gitignore`) :
 
    ```sh
    SAN_URL=https://san.example.org

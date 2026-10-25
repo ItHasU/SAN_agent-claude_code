@@ -47,7 +47,7 @@ Commande : `@SAN_BIN@` (notée `san` ci-dessous). Elle est silencieuse et ne fai
 | `san voice <fichier.wav\|mp3\|ogg>` | Envoie un fichier audio (30 s max) |
 | `san inbox [--wait S] [--ack ID]` | Messages reçus des viewers (JSON) |
 | `san fetch-voice <clip> [--format wav\|mp3\|ogg] [-o fichier]` | Télécharge un message vocal |
-| `san register <slug> [--name NOM] [--enrollment-token enr_…\|-] [--force]` | Enrôle l'agent et écrit `SAN_TOKEN` dans `~/.config/san/agent.env` |
+| `san register <slug> [--name NOM] [--enrollment-token enr_…\|-] [--force]` | Enrôle l'agent et écrit `SAN_TOKEN` dans `.claude/san.env` du projet (sinon `~/.config/san/agent.env`) |
 | `san register --status` | Statut d'enrôlement : `pending` ou `active` |
 
 ## Types de nudge

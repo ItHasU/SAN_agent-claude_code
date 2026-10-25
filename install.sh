@@ -95,6 +95,12 @@ else
   printf '%s\n' "$merged" >"$settings.tmp" && mv "$settings.tmp" "$settings"
 fi
 
+# Le fichier d'env d'un projet contient un jeton : ne jamais le versionner.
+if [ "$mode" = project ] && [ "$dry" = 0 ] && git -C "$target" rev-parse --git-dir >/dev/null 2>&1; then
+  gi="$(cd "$target" && pwd)/.gitignore"
+  grep -qxF '.claude/san.env' "$gi" 2>/dev/null || printf '.claude/san.env\n' >>"$gi"
+fi
+
 cat <<MSG
 SAN installé dans $claude_dir
   hooks   : $san_dir/hooks/
@@ -102,7 +108,8 @@ SAN installé dans $claude_dir
 MSG
 if [ -z "$reg_slug" ]; then
   cat <<MSG
-Configuration : exporter SAN_URL et SAN_TOKEN, ou créer ~/.config/san/agent.env :
+Configuration : exporter SAN_URL et SAN_TOKEN, ou créer $claude_dir/san.env (agent de ce projet)
+ou ~/.config/san/agent.env (agent de la machine) :
   SAN_URL=https://san.example.org
   SAN_TOKEN=agt_xxx
 Ou enrôler l'agent : SAN_URL=https://san.example.org $san_bin register <slug> [--enrollment-token enr_…]
@@ -117,6 +124,9 @@ if [ -n "$reg_slug" ]; then
   else
     # Le jeton enr_ passe par l'environnement du processus, jamais par un argument.
     if [ "$reg_tok" = - ]; then IFS= read -r reg_tok || true; fi
+    # Projet : le jeton va dans <.claude>/san.env (un agent par projet, lu en priorité par bin/san et
+    # les hooks) ; global : fichier ~/.config/san/agent.env. SAN_ENV_FILE explicite prime.
+    if [ "$mode" = project ] && [ -z "${SAN_ENV_FILE:-}" ]; then export SAN_ENV_FILE="$claude_dir/san.env"; fi
     SAN_ENROLLMENT_TOKEN="${reg_tok:-${SAN_ENROLLMENT_TOKEN:-}}" "$san_bin" register "$reg_slug" \
       || echo "install: l'enrôlement a échoué (voir ci-dessus) ; relancer : $san_bin register $reg_slug" >&2
   fi

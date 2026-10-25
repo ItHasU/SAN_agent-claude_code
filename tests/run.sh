@@ -560,6 +560,26 @@ JSON
   [ "$(count)" = 0 ] && [ ! -e "$RE" ] && ok "install sans --register: aucun enrôlement" || ko "install sans --register"
   "$ROOT/install.sh" --project "$PR" --enrollment-token enr_x >/dev/null 2>&1; rc=$?
   [ "$rc" != 0 ] && ok "install: --enrollment-token sans --register refusé" || ko "install token seul rc=$rc"
+  # agent par projet : <.claude>/san.env
+  PP="$TMP/projp"; mkdir -p "$PP"; (cd "$PP" && git init -q 2>/dev/null)
+  unset SAN_ENV_FILE; reset_log
+  out="$(SAN_URL="$URL" "$ROOT/install.sh" --project "$PP" --register proj-p --enrollment-token enr_goodtoken 2>&1)"; rc=$?
+  [ "$rc" = 0 ] && grep -qx 'SAN_TOKEN=agt_SECRETNEW' "$PP/.claude/san.env" && ok "install --register (projet): jeton dans .claude/san.env" || ko "san.env projet rc=$rc out=$out"
+  [ "$(ls -l "$PP/.claude/san.env" | cut -c1-10)" = "-rw-------" ] && ok "san.env projet en 0600" || ko "droits san.env"
+  grep -qxF '.claude/san.env' "$PP/.gitignore" && ok "install: .claude/san.env ajouté au .gitignore" || ko "gitignore san.env"
+  "$ROOT/install.sh" --project "$PP" --force >/dev/null 2>&1
+  [ "$(grep -cxF '.claude/san.env' "$PP/.gitignore")" = 1 ] && ok "install: .gitignore sans doublon" || ko "gitignore doublon"
+  # le hook et bin/san installés lisent le fichier du projet (même sans SAN_ENV_FILE, avec un fichier global différent)
+  mkdir -p "$G/.config/san"; printf 'SAN_URL=%s\nSAN_TOKEN=agt_GLOBAL\n' "$URL" >"$G/.config/san/agent.env"
+  printf 'SAN_URL=%s\nSAN_TOKEN=agt_PROJET\n' "$URL" >"$PP/.claude/san.env"
+  reset_log
+  HOME="$G" "$PP/.claude/san/bin/san" state working "x" >/dev/null 2>&1
+  check "bin/san installé: fichier projet prioritaire sur le global" req 0 "r['headers'].get('authorization','')=='Bearer agt_PROJET'"
+  reset_log; printf '{"session_id":"pp"}' | HOME="$G" "$PP/.claude/san/hooks/stop.sh"
+  check "hook installé: fichier projet prioritaire sur le global" req 0 "r['headers'].get('authorization','')=='Bearer agt_PROJET'"
+  rm -f "$PP/.claude/san.env"; reset_log
+  HOME="$G" "$PP/.claude/san/bin/san" state working "x" >/dev/null 2>&1
+  check "bin/san installé: sans fichier projet, repli sur le global" req 0 "r['headers'].get('authorization','')=='Bearer agt_GLOBAL'"
   # dry-run
   P3="$TMP/proj3"; mkdir -p "$P3"
   "$ROOT/install.sh" --project "$P3" --dry-run >/dev/null 2>&1

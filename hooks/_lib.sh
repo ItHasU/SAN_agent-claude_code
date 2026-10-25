@@ -24,7 +24,13 @@ NUDGE_START_WINDOW_S="${SAN_NUDGE_START_WINDOW_S:-300}"
 # Variables SAN_* facultatives : l'environnement prime, sinon fichier d'env de bin/san
 # (lu sans être exécuté). SAN_NUDGE_START : 0 (défaut) = pas de nudge start, 1 = activé.
 if [ -z "${SAN_NUDGE_START:-}" ]; then
-  _envf="${SAN_ENV_FILE:-$HOME/.config/san/agent.env}"
+  _envf="${SAN_ENV_FILE:-}"
+  if [ -z "$_envf" ]; then
+    # Même ordre que bin/san : <.claude>/san.env (agent par projet), sinon fichier global.
+    _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || _here=""
+    if [ -n "$_here" ] && [ -f "$_here/../../san.env" ]; then _envf="$_here/../../san.env"
+    else _envf="$HOME/.config/san/agent.env"; fi
+  fi
   if [ -f "$_envf" ] && [ -r "$_envf" ]; then
     SAN_NUDGE_START="$(sed -n 's/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}SAN_NUDGE_START=//p' "$_envf" 2>/dev/null \
       | tail -n1 | tr -d "\"' \r")"
