@@ -546,6 +546,20 @@ JSON
   G="$TMP/g"; mkdir -p "$G"
   HOME="$G" "$ROOT/install.sh" --global >/dev/null 2>&1
   check "install --global: ~/.claude/settings.json avec \$HOME" bash -c "jq -e '.hooks.Stop[0].hooks[0].command | contains(\"\$HOME/.claude/san/hooks\")' '$G/.claude/settings.json'"
+  # --register
+  PR="$TMP/projr"; mkdir -p "$PR"; RE="$TMP/projr.env"; reset_log
+  out="$(SAN_URL="$URL" SAN_ENV_FILE="$RE" "$ROOT/install.sh" --project "$PR" --register inst-1 --enrollment-token enr_goodtoken 2>&1)"; rc=$?
+  [ "$rc" = 0 ] && printf '%s' "$out" | grep -q 'actif (groupe equipe)' && grep -qx 'SAN_TOKEN=agt_SECRETNEW' "$RE" && ok "install --register: enrôle après installation" || ko "install --register rc=$rc out=$out"
+  printf '%s' "$out" | grep -q 'agt_SECRETNEW\|enr_goodtoken' && ko "install --register: jeton affiché" || ok "install --register: aucun jeton dans la sortie"
+  check "install --register: requête register avec le jeton" req 0 "r['path']=='/api/v1/agent/register' and r['body']=={'slug':'inst-1','enrollment_token':'enr_goodtoken'}"
+  rm -f "$RE"; reset_log
+  printf 'enr_goodtoken\n' | SAN_URL="$URL" SAN_ENV_FILE="$RE" "$ROOT/install.sh" --project "$PR" --register inst-2 --enrollment-token - >/dev/null 2>&1
+  check "install --register --enrollment-token - : stdin" req 0 "r['body'].get('enrollment_token')=='enr_goodtoken'"
+  reset_log; rm -f "$RE"
+  SAN_URL="$URL" SAN_ENV_FILE="$RE" "$ROOT/install.sh" --project "$PR" >/dev/null 2>&1
+  [ "$(count)" = 0 ] && [ ! -e "$RE" ] && ok "install sans --register: aucun enrôlement" || ko "install sans --register"
+  "$ROOT/install.sh" --project "$PR" --enrollment-token enr_x >/dev/null 2>&1; rc=$?
+  [ "$rc" != 0 ] && ok "install: --enrollment-token sans --register refusé" || ko "install token seul rc=$rc"
   # dry-run
   P3="$TMP/proj3"; mkdir -p "$P3"
   "$ROOT/install.sh" --project "$P3" --dry-run >/dev/null 2>&1

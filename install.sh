@@ -2,16 +2,19 @@
 # Installe la configuration SAN pour Claude Code (hooks, skill, commande, bin/san).
 #
 #   ./install.sh [--project DIR | --global] [--force] [--dry-run]
+#                [--register SLUG [--enrollment-token enr_…]]
 #
 # Sans option : installe dans le projet courant (DIR/.claude). Les hooks sont fusionnés
 # dans un settings.json existant (jq requis) ; les hooks SAN déjà présents sont remplacés,
 # le reste est conservé. Une sauvegarde settings.json.bak est créée.
+# --register SLUG enrôle ensuite l'agent (san register) ; le jeton enr_ peut aussi venir de
+# SAN_ENROLLMENT_TOKEN ou de stdin (--enrollment-token -). Nécessite SAN_URL.
 set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-mode=project target="$PWD" force=0 dry=0
+mode=project target="$PWD" force=0 dry=0 reg_slug="" reg_tok=""
 
-usage() { sed -n '2,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 die() { echo "install: $*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
@@ -20,10 +23,13 @@ while [ $# -gt 0 ]; do
     --project) mode=project; target="${2:-}"; [ -n "$target" ] || die "--project attend un dossier"; shift 2 ;;
     --force) force=1; shift ;;
     --dry-run) dry=1; shift ;;
+    --register) reg_slug="${2:-}"; [ -n "$reg_slug" ] || die "--register attend un identifiant"; shift 2 ;;
+    --enrollment-token) reg_tok="${2:-}"; [ -n "$reg_tok" ] || die "--enrollment-token attend une valeur"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; die "option inconnue : $1" ;;
   esac
 done
+[ -z "$reg_tok" ] || [ -n "$reg_slug" ] || die "--enrollment-token nécessite --register SLUG"
 
 command -v jq >/dev/null 2>&1 || die "jq est requis pour fusionner settings.json"
 
@@ -93,8 +99,25 @@ cat <<MSG
 SAN installé dans $claude_dir
   hooks   : $san_dir/hooks/
   binaire : $san_bin
+MSG
+if [ -z "$reg_slug" ]; then
+  cat <<MSG
 Configuration : exporter SAN_URL et SAN_TOKEN, ou créer ~/.config/san/agent.env :
   SAN_URL=https://san.example.org
   SAN_TOKEN=agt_xxx
+Ou enrôler l'agent : SAN_URL=https://san.example.org $san_bin register <slug> [--enrollment-token enr_…]
 Test : $san_bin state idle "test"
 MSG
+fi
+
+# 4. Enrôlement facultatif.
+if [ -n "$reg_slug" ]; then
+  if [ "$dry" = 1 ]; then
+    echo "[dry-run] $san_bin register $reg_slug"
+  else
+    # Le jeton enr_ passe par l'environnement du processus, jamais par un argument.
+    if [ "$reg_tok" = - ]; then IFS= read -r reg_tok || true; fi
+    SAN_ENROLLMENT_TOKEN="${reg_tok:-${SAN_ENROLLMENT_TOKEN:-}}" "$san_bin" register "$reg_slug" \
+      || echo "install: l'enrôlement a échoué (voir ci-dessus) ; relancer : $san_bin register $reg_slug" >&2
+  fi
+fi
