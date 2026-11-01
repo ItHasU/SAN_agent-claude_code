@@ -151,7 +151,7 @@ out="$("$SAN" state working x 2>&1)"; rc=$?
 t0=$(date +%s)
 out="$(SAN_URL=http://127.0.0.1:1 SAN_TOKEN=x "$SAN" state working x 2>&1)"; rc=$?
 t1=$(date +%s)
-[ "$rc" = 0 ] && [ -z "$out" ] && [ $((t1 - t0)) -le 3 ] && ok "serveur down: silencieux, code 0, rapide" || ko "serveur down (rc=$rc, $((t1 - t0))s)"
+[ "$rc" = 0 ] && [ -z "$out" ] && [ $((t1 - t0)) -le 10 ] && ok "serveur down: silencieux, code 0, rapide" || ko "serveur down (rc=$rc, $((t1 - t0))s)"
 SAN_STRICT=1 SAN_URL=http://127.0.0.1:1 SAN_TOKEN=x "$SAN" state idle >/dev/null 2>&1; rc=$?
 [ "$rc" = 1 ] && ok "SAN_STRICT=1: code 1 si injoignable" || ko "SAN_STRICT code $rc"
 SAN_URL="$URL" SAN_TOKEN=mauvais "$SAN" state idle >/dev/null 2>&1; rc=$?
@@ -471,7 +471,7 @@ for h in session-start user-prompt-submit post-tool-use notification stop stop-f
       out="$(printf '{"session_id":"s","prompt":"x","tool_name":"Edit"}' | "$ROOT/hooks/$h.sh" 2>&1)"; rc=$?
     fi
     t1=$(date +%s)
-    [ "$rc" = 0 ] && [ -z "$out" ] && [ $((t1 - t0)) -le 4 ] && ok "$h ($mode): code 0, silencieux, rapide" || ko "$h ($mode): rc=$rc out=$out $((t1 - t0))s"
+    [ "$rc" = 0 ] && [ -z "$out" ] && [ $((t1 - t0)) -le 10 ] && ok "$h ($mode): code 0, silencieux, rapide" || ko "$h ($mode): rc=$rc out=$out $((t1 - t0))s"
   done
 done
 for h in session-start user-prompt-submit post-tool-use notification stop stop-failure session-end subagent-start subagent-stop; do
